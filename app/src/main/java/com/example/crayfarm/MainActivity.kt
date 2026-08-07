@@ -5559,63 +5559,52 @@ fun EmployeesScreen(
             .getReference("users")
     }
 
-    DisposableEffect(usersRef, admin.farmId) {
-        val listener = object : ValueEventListener {
+    val activeWorkersQuery = remember(admin.farmId) {
+        usersRef
+            .orderByChild("farmId")
+            .equalTo(admin.farmId)
+    }
+
+    val removedWorkersQuery = remember(admin.farmId) {
+        usersRef
+            .orderByChild("previousFarmId")
+            .equalTo(admin.farmId)
+    }
+
+    DisposableEffect(
+        activeWorkersQuery,
+        removedWorkersQuery,
+        admin.farmId
+    ) {
+        val activeListener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                val activeWorkers = mutableListOf<EmployeeSummary>()
-                val removedWorkers = mutableListOf<EmployeeSummary>()
+                currentEmployees = snapshot.children
+                    .mapNotNull { child ->
+                        val role = child.child("role")
+                            .getValue(String::class.java)
+                            .orEmpty()
 
-                snapshot.children.forEach { child ->
-                    val role = child.child("role")
-                        .getValue(String::class.java)
-                        .orEmpty()
+                        val approved = child.child("approved")
+                            .getValue(Boolean::class.java)
+                            ?: false
 
-                    if (role != "worker") {
-                        return@forEach
+                        if (role != "worker" || !approved) {
+                            return@mapNotNull null
+                        }
+
+                        EmployeeSummary(
+                            uid = child.key.orEmpty(),
+                            fullName = child.child("fullName")
+                                .getValue(String::class.java)
+                                .orEmpty(),
+                            email = child.child("email")
+                                .getValue(String::class.java)
+                                .orEmpty()
+                        )
                     }
-
-                    val uid = child.key.orEmpty()
-                    val fullName = child.child("fullName")
-                        .getValue(String::class.java)
-                        .orEmpty()
-                    val email = child.child("email")
-                        .getValue(String::class.java)
-                        .orEmpty()
-                    val farmId = child.child("farmId")
-                        .getValue(String::class.java)
-                        .orEmpty()
-                    val previousFarmId = child.child("previousFarmId")
-                        .getValue(String::class.java)
-                        .orEmpty()
-                    val employmentStatus = child.child("employmentStatus")
-                        .getValue(String::class.java)
-                        .orEmpty()
-                    val approved = child.child("approved")
-                        .getValue(Boolean::class.java)
-                        ?: false
-
-                    val employee = EmployeeSummary(
-                        uid = uid,
-                        fullName = fullName,
-                        email = email
-                    )
-
-                    if (approved && farmId == admin.farmId) {
-                        activeWorkers.add(employee)
-                    } else if (
-                        !approved &&
-                        previousFarmId == admin.farmId &&
-                        employmentStatus == "removed"
-                    ) {
-                        removedWorkers.add(employee)
+                    .sortedBy { employee ->
+                        employee.fullName.lowercase()
                     }
-                }
-
-                currentEmployees =
-                    activeWorkers.sortedBy { it.fullName.lowercase() }
-
-                formerEmployees =
-                    removedWorkers.sortedBy { it.fullName.lowercase() }
             }
 
             override fun onCancelled(error: DatabaseError) {
@@ -5624,10 +5613,58 @@ fun EmployeesScreen(
             }
         }
 
-        usersRef.addValueEventListener(listener)
+        val removedListener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                formerEmployees = snapshot.children
+                    .mapNotNull { child ->
+                        val role = child.child("role")
+                            .getValue(String::class.java)
+                            .orEmpty()
+
+                        val approved = child.child("approved")
+                            .getValue(Boolean::class.java)
+                            ?: false
+
+                        val employmentStatus =
+                            child.child("employmentStatus")
+                                .getValue(String::class.java)
+                                .orEmpty()
+
+                        if (
+                            role != "worker" ||
+                            approved ||
+                            employmentStatus != "removed"
+                        ) {
+                            return@mapNotNull null
+                        }
+
+                        EmployeeSummary(
+                            uid = child.key.orEmpty(),
+                            fullName = child.child("fullName")
+                                .getValue(String::class.java)
+                                .orEmpty(),
+                            email = child.child("email")
+                                .getValue(String::class.java)
+                                .orEmpty()
+                        )
+                    }
+                    .sortedBy { employee ->
+                        employee.fullName.lowercase()
+                    }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                messageIsSuccess = false
+                message = error.message
+            }
+        }
+
+        activeWorkersQuery.addValueEventListener(activeListener)
+        removedWorkersQuery.addValueEventListener(removedListener)
 
         onDispose {
-            usersRef.removeEventListener(listener)
+            activeWorkersQuery.removeEventListener(activeListener)
+            removedWorkersQuery.removeEventListener(removedListener)
         }
     }
 

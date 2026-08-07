@@ -27,6 +27,7 @@
 const char *DEVICE_ID = "CRAY-ESP32-001";
 
 #define ENABLE_DATABASE
+#define ENABLE_USER_AUTH
 
 #include <WiFi.h>
 #include <FirebaseClient.h>
@@ -36,11 +37,15 @@ const char *DEVICE_ID = "CRAY-ESP32-001";
 #include <DallasTemperature.h>
 #include <time.h>
 
-#define WIFI_SSID "YOUR_WIFI_NAME"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID "wifi name"
+#define WIFI_PASSWORD "wifi pass"
+
+#define API_KEY "REDACTED_GOOGLE_API_KEY"
+#define USER_EMAIL "REDACTED"
+#define USER_PASSWORD "REDACTED"
 
 #define DATABASE_URL \
-    "YOUR_FIREBASE_DATABASE_URL"
+    "https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app"
 
 #define ONE_WIRE_BUS 4
 #define TURBIDITY_PIN 34
@@ -54,7 +59,11 @@ const float TURBIDITY_CLOUDY_VOLTAGE = 0.715f;
 const int TURBIDITY_SAMPLE_COUNT = 50;
 const int TURBIDITY_SAMPLE_DELAY_MS = 10;
 
-NoAuth no_auth;
+UserAuth user_auth(
+    API_KEY,
+    USER_EMAIL,
+    USER_PASSWORD
+);
 
 FirebaseApp app;
 RealtimeDatabase Database;
@@ -165,10 +174,22 @@ void setup()
     );
 
     initializeApp(
-        aClient,
-        app,
-        getAuth(no_auth)
+    aClient,
+    app,
+    getAuth(user_auth),
+    120 * 1000
     );
+
+    if (app.ready()) {
+    Serial.println("Firebase authentication successful.");
+    } else {
+        Serial.println("Firebase authentication failed.");
+    }
+
+    app.getApp<RealtimeDatabase>(Database);
+    Database.url(DATABASE_URL);
+
+    Serial.println("Firebase initialized.");
 
     app.getApp<RealtimeDatabase>(Database);
     Database.url(DATABASE_URL);
