@@ -3,6 +3,10 @@ package com.example.crayfarm
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Base64
+import java.io.ByteArrayOutputStream
 import android.util.Patterns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -11,10 +15,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -55,9 +61,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -65,6 +73,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.crayfarm.ui.theme.CrayFarmTheme
+import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
@@ -88,6 +97,28 @@ data class PondReadings(
     val tds: Double = 0.0,
     val waterLevel: Double = 0.0
 )
+
+data class SensorConnectionState(
+    val temperature: Boolean = false,
+    val ph: Boolean = false,
+    val turbidity: Boolean = false,
+    val tds: Boolean = false,
+    val waterLevel: Boolean = false
+) {
+    fun anyConnected(): Boolean {
+        return temperature || ph || turbidity || tds || waterLevel
+    }
+
+    fun disconnectedCount(): Int {
+        return listOf(
+            temperature,
+            ph,
+            turbidity,
+            tds,
+            waterLevel
+        ).count { connected -> !connected }
+    }
+}
 
 data class PondHistoryRecord(
     val id: String = "",
@@ -182,7 +213,11 @@ data class CrayFarmUser(
     val previousFarmId: String = "",
     val employmentStatus: String = "",
     val approved: Boolean = false,
-    val active: Boolean = false
+    val active: Boolean = false,
+    val age: Int = 0,
+    val address: String = "",
+    val contactNumber: String = "",
+    val birthday: String = ""
 )
 
 data class EmployeeRequest(
@@ -197,7 +232,19 @@ data class EmployeeRequest(
 data class EmployeeSummary(
     val uid: String = "",
     val fullName: String = "",
-    val email: String = ""
+    val email: String = "",
+    val age: Int = 0,
+    val address: String = "",
+    val contactNumber: String = "",
+    val birthday: String = ""
+)
+
+data class FarmProfile(
+    val farmId: String = "",
+    val farmName: String = "",
+    val description: String = "",
+    val photoBase64: String = "",
+    val ownerUid: String = ""
 )
 
 data class ActivityLog(
@@ -2818,6 +2865,9 @@ fun PondDashboardContent(
     val context = LocalContext.current
 
     var readings by remember { mutableStateOf(PondReadings()) }
+    var sensorConnections by remember {
+        mutableStateOf(SensorConnectionState())
+    }
     var thresholds by remember { mutableStateOf(PondThresholds()) }
     var hasReadings by remember { mutableStateOf(false) }
     var hasThresholds by remember { mutableStateOf(false) }
@@ -2832,6 +2882,10 @@ fun PondDashboardContent(
     }
     var alertsError by remember { mutableStateOf("") }
     var showAlertsPage by remember { mutableStateOf(false) }
+
+    var thresholdSensorToEdit by remember(pond.pondId) {
+        mutableStateOf<AnalyticsSensor?>(null)
+    }
 
     val seenAlertIds = remember(pond.pondId) {
         mutableSetOf<String>()
@@ -2892,22 +2946,70 @@ fun PondDashboardContent(
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 if (!snapshot.exists()) {
+                    readings = PondReadings()
+                    sensorConnections = SensorConnectionState()
                     hasReadings = false
                     return
                 }
 
+                val temperature =
+                    snapshot.readNullableNumber("temperature")
+                val ph =
+                    snapshot.readNullableNumber("ph")
+                val turbidity =
+                    snapshot.readNullableNumber("turbidity")
+                val tds =
+                    snapshot.readNullableNumber("tds")
+                val waterLevel =
+                    snapshot.readNullableNumber("waterLevel")
+
+                val temperatureConnected =
+                    snapshot.readNullableBoolean(
+                        "temperatureConnected"
+                    ) ?: (temperature != null)
+
+                val phConnected =
+                    snapshot.readNullableBoolean(
+                        "phConnected"
+                    ) ?: (ph != null)
+
+                val turbidityConnected =
+                    snapshot.readNullableBoolean(
+                        "turbidityConnected"
+                    ) ?: (turbidity != null)
+
+                val tdsConnected =
+                    snapshot.readNullableBoolean(
+                        "tdsConnected"
+                    ) ?: (tds != null)
+
+                val waterLevelConnected =
+                    snapshot.readNullableBoolean(
+                        "waterLevelConnected"
+                    ) ?: (waterLevel != null)
+
                 readings = PondReadings(
-                    temperature = snapshot.readNumber("temperature"),
-                    ph = snapshot.readNumber("ph"),
-                    turbidity = snapshot.readNumber("turbidity"),
-                    tds = snapshot.readNumber("tds"),
-                    waterLevel = snapshot.readNumber("waterLevel")
+                    temperature = temperature ?: 0.0,
+                    ph = ph ?: 0.0,
+                    turbidity = turbidity ?: 0.0,
+                    tds = tds ?: 0.0,
+                    waterLevel = waterLevel ?: 0.0
                 )
 
-                hasReadings = true
+                sensorConnections = SensorConnectionState(
+                    temperature = temperatureConnected,
+                    ph = phConnected,
+                    turbidity = turbidityConnected,
+                    tds = tdsConnected,
+                    waterLevel = waterLevelConnected
+                )
+
+                hasReadings = sensorConnections.anyConnected()
             }
 
             override fun onCancelled(error: DatabaseError) {
+                readings = PondReadings()
+                sensorConnections = SensorConnectionState()
                 hasReadings = false
             }
         }
@@ -3122,6 +3224,7 @@ fun PondDashboardContent(
         hasReadings,
         hasThresholds,
         readings,
+        sensorConnections,
         thresholds,
         user.farmId,
         pond.pondId
@@ -3131,56 +3234,84 @@ fun PondDashboardContent(
                 user = user,
                 pond = pond,
                 readings = readings,
+                connections = sensorConnections,
                 thresholds = thresholds
             )
         }
     }
 
-    val tempStatus = rangeStatus(
-        value = readings.temperature,
-        minimum = thresholds.minTemperature,
-        maximum = thresholds.maxTemperature,
-        lowLabel = "Low",
-        highLabel = "High"
-    )
+    val disconnectedStatus =
+        "Sensor not connected" to Color.Gray
 
-    val phReadingStatus = rangeStatus(
-        value = readings.ph,
-        minimum = thresholds.minPh,
-        maximum = thresholds.maxPh,
-        lowLabel = "Acidic",
-        highLabel = "Alkaline"
-    )
-
-    val turbidityStatus = maximumStatus(
-        value = readings.turbidity,
-        maximum = thresholds.maxTurbidity,
-        highLabel = "High"
-    )
-
-    val tdsStatus = rangeStatus(
-        value = readings.tds,
-        minimum = thresholds.minTds,
-        maximum = thresholds.maxTds,
-        lowLabel = "Low",
-        highLabel = "High"
-    )
-
-    val waterLevelStatus = minimumStatus(
-        value = readings.waterLevel,
-        minimum = thresholds.minWaterLevel,
-        lowLabel = "Low"
-    )
-
-    val allSystemsSafe = listOf(
-        tempStatus,
-        phReadingStatus,
-        turbidityStatus,
-        tdsStatus,
-        waterLevelStatus
-    ).all { status ->
-        status.first == "Safe"
+    val tempStatus = if (sensorConnections.temperature) {
+        rangeStatus(
+            value = readings.temperature,
+            minimum = thresholds.minTemperature,
+            maximum = thresholds.maxTemperature,
+            lowLabel = "Low",
+            highLabel = "High"
+        )
+    } else {
+        disconnectedStatus
     }
+
+    val phReadingStatus = if (sensorConnections.ph) {
+        rangeStatus(
+            value = readings.ph,
+            minimum = thresholds.minPh,
+            maximum = thresholds.maxPh,
+            lowLabel = "Acidic",
+            highLabel = "Alkaline"
+        )
+    } else {
+        disconnectedStatus
+    }
+
+    val turbidityStatus = if (sensorConnections.turbidity) {
+        maximumStatus(
+            value = readings.turbidity,
+            maximum = thresholds.maxTurbidity,
+            highLabel = "High"
+        )
+    } else {
+        disconnectedStatus
+    }
+
+    val tdsStatus = if (sensorConnections.tds) {
+        rangeStatus(
+            value = readings.tds,
+            minimum = thresholds.minTds,
+            maximum = thresholds.maxTds,
+            lowLabel = "Low",
+            highLabel = "High"
+        )
+    } else {
+        disconnectedStatus
+    }
+
+    val waterLevelStatus = if (sensorConnections.waterLevel) {
+        minimumStatus(
+            value = readings.waterLevel,
+            minimum = thresholds.minWaterLevel,
+            lowLabel = "Low"
+        )
+    } else {
+        disconnectedStatus
+    }
+
+    val connectedStatuses = buildList {
+        if (sensorConnections.temperature) add(tempStatus)
+        if (sensorConnections.ph) add(phReadingStatus)
+        if (sensorConnections.turbidity) add(turbidityStatus)
+        if (sensorConnections.tds) add(tdsStatus)
+        if (sensorConnections.waterLevel) add(waterLevelStatus)
+    }
+
+    val allSystemsSafe =
+        connectedStatuses.isNotEmpty() &&
+                connectedStatuses.all { status ->
+                    status.first == "Safe"
+                }
 
     val unreadAlertCount = alerts.count { alert ->
         !alert.acknowledged
@@ -3198,6 +3329,21 @@ fun PondDashboardContent(
         )
 
         return
+    }
+
+    thresholdSensorToEdit?.let { selectedSensor ->
+        SensorThresholdDialog(
+            user = user,
+            pond = pond,
+            sensor = selectedSensor,
+            currentThresholds = thresholds,
+            onDismiss = {
+                thresholdSensorToEdit = null
+            },
+            onSaved = {
+                thresholdSensorToEdit = null
+            }
+        )
     }
 
     Surface(
@@ -3221,7 +3367,19 @@ fun PondDashboardContent(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 SystemStatus(
-                    allSystemsSafe = allSystemsSafe
+                    allSystemsSafe = allSystemsSafe,
+                    connectedCount = 5 -
+                            sensorConnections.disconnectedCount(),
+                    disconnectedCount =
+                        sensorConnections.disconnectedCount()
+                )
+
+                Text(
+                    text = "Press and hold a sensor card to change its threshold.",
+                    modifier = Modifier.fillMaxWidth(),
+                    fontSize = 11.sp,
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center
                 )
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3229,20 +3387,34 @@ fun PondDashboardContent(
                         modifier = Modifier.weight(1f),
                         icon = "♨",
                         title = "Temperature",
-                        value = String.format("%.1f", readings.temperature),
-                        unit = "°C",
+                        value = if (sensorConnections.temperature) {
+                            String.format("%.1f", readings.temperature)
+                        } else {
+                            "--"
+                        },
+                        unit = if (sensorConnections.temperature) "°C" else "",
                         status = tempStatus.first,
-                        statusColor = tempStatus.second
+                        statusColor = tempStatus.second,
+                        onLongClick = {
+                            thresholdSensorToEdit = AnalyticsSensor.TEMPERATURE
+                        }
                     )
 
                     SensorCard(
                         modifier = Modifier.weight(1f),
                         icon = "pH",
                         title = "pH Level",
-                        value = String.format("%.1f", readings.ph),
+                        value = if (sensorConnections.ph) {
+                            String.format("%.1f", readings.ph)
+                        } else {
+                            "--"
+                        },
                         unit = "",
                         status = phReadingStatus.first,
-                        statusColor = phReadingStatus.second
+                        statusColor = phReadingStatus.second,
+                        onLongClick = {
+                            thresholdSensorToEdit = AnalyticsSensor.PH
+                        }
                     )
                 }
 
@@ -3251,27 +3423,45 @@ fun PondDashboardContent(
                         modifier = Modifier.weight(1f),
                         icon = "◒",
                         title = "Turbidity",
-                        value = String.format("%.1f", readings.turbidity),
-                        unit = "%",
+                        value = if (sensorConnections.turbidity) {
+                            String.format("%.1f", readings.turbidity)
+                        } else {
+                            "--"
+                        },
+                        unit = if (sensorConnections.turbidity) "%" else "",
                         status = turbidityStatus.first,
-                        statusColor = turbidityStatus.second
+                        statusColor = turbidityStatus.second,
+                        onLongClick = {
+                            thresholdSensorToEdit = AnalyticsSensor.TURBIDITY
+                        }
                     )
 
                     SensorCard(
                         modifier = Modifier.weight(1f),
                         icon = "TDS",
                         title = "TDS",
-                        value = String.format("%.0f", readings.tds),
-                        unit = "ppm",
+                        value = if (sensorConnections.tds) {
+                            String.format("%.0f", readings.tds)
+                        } else {
+                            "--"
+                        },
+                        unit = if (sensorConnections.tds) "ppm" else "",
                         status = tdsStatus.first,
-                        statusColor = tdsStatus.second
+                        statusColor = tdsStatus.second,
+                        onLongClick = {
+                            thresholdSensorToEdit = AnalyticsSensor.TDS
+                        }
                     )
                 }
 
                 WaterLevelCard(
                     waterLevel = readings.waterLevel,
+                    connected = sensorConnections.waterLevel,
                     status = waterLevelStatus.first,
-                    statusColor = waterLevelStatus.second
+                    statusColor = waterLevelStatus.second,
+                    onLongClick = {
+                        thresholdSensorToEdit = AnalyticsSensor.WATER_LEVEL
+                    }
                 )
 
                 Text(
@@ -3729,24 +3919,38 @@ fun PondAlertCard(
 
 @Composable
 fun SystemStatus(
-    allSystemsSafe: Boolean
+    allSystemsSafe: Boolean,
+    connectedCount: Int,
+    disconnectedCount: Int
 ) {
-    val statusColor = if (allSystemsSafe) {
-        SafeGreen
-    } else {
-        WarningOrange
+    val statusColor = when {
+        connectedCount == 0 -> Color.Gray
+        allSystemsSafe && disconnectedCount == 0 -> SafeGreen
+        allSystemsSafe -> WarningOrange
+        else -> WarningOrange
     }
 
-    val statusIcon = if (allSystemsSafe) {
-        "✓"
-    } else {
-        "!"
+    val statusIcon = when {
+        connectedCount == 0 -> "—"
+        allSystemsSafe && disconnectedCount == 0 -> "✓"
+        else -> "!"
     }
 
-    val statusText = if (allSystemsSafe) {
-        "Systems are normal"
-    } else {
-        "One or more readings need attention"
+    val statusText = when {
+        connectedCount == 0 ->
+            "No sensor readings detected"
+
+        disconnectedCount > 0 && allSystemsSafe ->
+            "$disconnectedCount sensor(s) not connected"
+
+        disconnectedCount > 0 ->
+            "Some readings need attention; $disconnectedCount sensor(s) not connected"
+
+        allSystemsSafe ->
+            "Systems are normal"
+
+        else ->
+            "One or more readings need attention"
     }
 
     Card(
@@ -3778,6 +3982,7 @@ fun SystemStatus(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SensorCard(
     modifier: Modifier = Modifier,
@@ -3786,10 +3991,16 @@ fun SensorCard(
     value: String,
     unit: String,
     status: String,
-    statusColor: Color
+    statusColor: Color,
+    onLongClick: () -> Unit
 ) {
     Card(
-        modifier = modifier.height(115.dp),
+        modifier = modifier
+            .height(115.dp)
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onLongClick
+            ),
         colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
         shape = RoundedCornerShape(10.dp)
@@ -3845,16 +4056,23 @@ fun SensorCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun WaterLevelCard(
     waterLevel: Double,
+    connected: Boolean,
     status: String,
-    statusColor: Color
+    statusColor: Color,
+    onLongClick: () -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(92.dp),
+            .height(92.dp)
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onLongClick
+            ),
         colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
         shape = RoundedCornerShape(10.dp)
@@ -3882,7 +4100,11 @@ fun WaterLevelCard(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "${waterLevel.toInt()}%",
+                        text = if (connected) {
+                            "${waterLevel.toInt()}%"
+                        } else {
+                            "--"
+                        },
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Medium
                     )
@@ -3897,6 +4119,404 @@ fun WaterLevelCard(
             }
         }
     }
+}
+
+@Composable
+fun SensorThresholdDialog(
+    user: CrayFarmUser,
+    pond: PondSummary,
+    sensor: AnalyticsSensor,
+    currentThresholds: PondThresholds,
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit
+) {
+    val defaults = PondThresholds()
+
+    var firstValue by remember(sensor, currentThresholds) {
+        mutableStateOf(
+            when (sensor) {
+                AnalyticsSensor.TEMPERATURE ->
+                    currentThresholds.minTemperature.formatThreshold()
+                AnalyticsSensor.PH ->
+                    currentThresholds.minPh.formatThreshold()
+                AnalyticsSensor.TURBIDITY ->
+                    currentThresholds.maxTurbidity.formatThreshold()
+                AnalyticsSensor.TDS ->
+                    currentThresholds.minTds.formatThreshold()
+                AnalyticsSensor.WATER_LEVEL ->
+                    currentThresholds.minWaterLevel.formatThreshold()
+            }
+        )
+    }
+
+    var secondValue by remember(sensor, currentThresholds) {
+        mutableStateOf(
+            when (sensor) {
+                AnalyticsSensor.TEMPERATURE ->
+                    currentThresholds.maxTemperature.formatThreshold()
+                AnalyticsSensor.PH ->
+                    currentThresholds.maxPh.formatThreshold()
+                AnalyticsSensor.TDS ->
+                    currentThresholds.maxTds.formatThreshold()
+                else -> ""
+            }
+        )
+    }
+
+    var errorMessage by remember(sensor) {
+        mutableStateOf("")
+    }
+
+    var isSaving by remember(sensor) {
+        mutableStateOf(false)
+    }
+
+    fun buildThresholds(): PondThresholds? {
+        val first = firstValue.toDoubleOrNull()
+        if (first == null) {
+            errorMessage = "Enter a valid threshold value."
+            return null
+        }
+
+        val updated = when (sensor) {
+            AnalyticsSensor.TEMPERATURE -> {
+                val second = secondValue.toDoubleOrNull()
+                if (second == null) {
+                    errorMessage = "Enter a valid maximum temperature."
+                    return null
+                }
+
+                currentThresholds.copy(
+                    minTemperature = first,
+                    maxTemperature = second
+                )
+            }
+
+            AnalyticsSensor.PH -> {
+                val second = secondValue.toDoubleOrNull()
+                if (second == null) {
+                    errorMessage = "Enter a valid maximum pH."
+                    return null
+                }
+
+                currentThresholds.copy(
+                    minPh = first,
+                    maxPh = second
+                )
+            }
+
+            AnalyticsSensor.TURBIDITY -> {
+                currentThresholds.copy(
+                    maxTurbidity = first
+                )
+            }
+
+            AnalyticsSensor.TDS -> {
+                val second = secondValue.toDoubleOrNull()
+                if (second == null) {
+                    errorMessage = "Enter a valid maximum TDS."
+                    return null
+                }
+
+                currentThresholds.copy(
+                    minTds = first,
+                    maxTds = second
+                )
+            }
+
+            AnalyticsSensor.WATER_LEVEL -> {
+                currentThresholds.copy(
+                    minWaterLevel = first
+                )
+            }
+        }
+
+        val validationError = validatePondThresholds(updated)
+        if (validationError != null) {
+            errorMessage = validationError
+            return null
+        }
+
+        return updated
+    }
+
+    fun defaultThresholdsForSensor(): PondThresholds {
+        return when (sensor) {
+            AnalyticsSensor.TEMPERATURE ->
+                currentThresholds.copy(
+                    minTemperature = defaults.minTemperature,
+                    maxTemperature = defaults.maxTemperature
+                )
+
+            AnalyticsSensor.PH ->
+                currentThresholds.copy(
+                    minPh = defaults.minPh,
+                    maxPh = defaults.maxPh
+                )
+
+            AnalyticsSensor.TURBIDITY ->
+                currentThresholds.copy(
+                    maxTurbidity = defaults.maxTurbidity
+                )
+
+            AnalyticsSensor.TDS ->
+                currentThresholds.copy(
+                    minTds = defaults.minTds,
+                    maxTds = defaults.maxTds
+                )
+
+            AnalyticsSensor.WATER_LEVEL ->
+                currentThresholds.copy(
+                    minWaterLevel = defaults.minWaterLevel
+                )
+        }
+    }
+
+    val title = when (sensor) {
+        AnalyticsSensor.TEMPERATURE -> "Temperature Threshold"
+        AnalyticsSensor.PH -> "pH Threshold"
+        AnalyticsSensor.TURBIDITY -> "Turbidity Threshold"
+        AnalyticsSensor.TDS -> "TDS Threshold"
+        AnalyticsSensor.WATER_LEVEL -> "Water Level Threshold"
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!isSaving) {
+                onDismiss()
+            }
+        },
+        title = {
+            Text(
+                text = title,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "These values control the sensor's Safe, Low, and High status on ${pond.pondName}.",
+                    fontSize = 13.sp,
+                    color = Color.Gray
+                )
+
+                when (sensor) {
+                    AnalyticsSensor.TEMPERATURE -> {
+                        ThresholdField(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Minimum Temperature (°C)",
+                            value = firstValue,
+                            onValueChanged = {
+                                firstValue = it
+                                errorMessage = ""
+                            }
+                        )
+
+                        ThresholdField(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Maximum Temperature (°C)",
+                            value = secondValue,
+                            onValueChanged = {
+                                secondValue = it
+                                errorMessage = ""
+                            }
+                        )
+
+                        Text(
+                            text = "Default: 20°C – 30°C",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+
+                    AnalyticsSensor.PH -> {
+                        ThresholdField(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Minimum pH",
+                            value = firstValue,
+                            onValueChanged = {
+                                firstValue = it
+                                errorMessage = ""
+                            }
+                        )
+
+                        ThresholdField(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Maximum pH",
+                            value = secondValue,
+                            onValueChanged = {
+                                secondValue = it
+                                errorMessage = ""
+                            }
+                        )
+
+                        Text(
+                            text = "Default: 6.5 – 8.5",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+
+                    AnalyticsSensor.TURBIDITY -> {
+                        ThresholdField(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Maximum Relative Turbidity (%)",
+                            value = firstValue,
+                            onValueChanged = {
+                                firstValue = it
+                                errorMessage = ""
+                            }
+                        )
+
+                        Text(
+                            text = "Default maximum: 25%",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+
+                    AnalyticsSensor.TDS -> {
+                        ThresholdField(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Minimum TDS (ppm)",
+                            value = firstValue,
+                            onValueChanged = {
+                                firstValue = it
+                                errorMessage = ""
+                            }
+                        )
+
+                        ThresholdField(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Maximum TDS (ppm)",
+                            value = secondValue,
+                            onValueChanged = {
+                                secondValue = it
+                                errorMessage = ""
+                            }
+                        )
+
+                        Text(
+                            text = "Default: 200 – 500 ppm",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+
+                    AnalyticsSensor.WATER_LEVEL -> {
+                        ThresholdField(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Minimum Water Level (%)",
+                            value = firstValue,
+                            onValueChanged = {
+                                firstValue = it
+                                errorMessage = ""
+                            }
+                        )
+
+                        Text(
+                            text = "Default minimum: 40%",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                if (errorMessage.isNotBlank()) {
+                    Text(
+                        text = errorMessage,
+                        color = Color(0xFFC62828),
+                        fontSize = 12.sp
+                    )
+                }
+
+                TextButton(
+                    onClick = {
+                        if (isSaving) {
+                            return@TextButton
+                        }
+
+                        isSaving = true
+                        errorMessage = ""
+
+                        savePondThresholds(
+                            user = user,
+                            pond = pond,
+                            thresholds = defaultThresholdsForSensor(),
+                            onSuccess = {
+                                isSaving = false
+                                onSaved()
+                            },
+                            onError = { error ->
+                                isSaving = false
+                                errorMessage = error
+                            }
+                        )
+                    },
+                    enabled = !isSaving
+                ) {
+                    Text(
+                        text = "Reset to Default",
+                        color = Color(0xFFC62828),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (isSaving) {
+                        return@TextButton
+                    }
+
+                    val updatedThresholds =
+                        buildThresholds() ?: return@TextButton
+
+                    isSaving = true
+                    errorMessage = ""
+
+                    savePondThresholds(
+                        user = user,
+                        pond = pond,
+                        thresholds = updatedThresholds,
+                        onSuccess = {
+                            isSaving = false
+                            onSaved()
+                        },
+                        onError = { error ->
+                            isSaving = false
+                            errorMessage = error
+                        }
+                    )
+                },
+                enabled = !isSaving
+            ) {
+                if (isSaving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text(
+                        text = "Save",
+                        color = Blue,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isSaving
+            ) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable
@@ -5549,6 +6169,9 @@ fun EmployeesScreen(
     var employeeToRestore by remember {
         mutableStateOf<EmployeeSummary?>(null)
     }
+    var employeeToView by remember {
+        mutableStateOf<EmployeeSummary?>(null)
+    }
     var message by remember { mutableStateOf("") }
     var messageIsSuccess by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
@@ -5599,6 +6222,18 @@ fun EmployeesScreen(
                                 .orEmpty(),
                             email = child.child("email")
                                 .getValue(String::class.java)
+                                .orEmpty(),
+                            age = (child.child("age").value as? Number)
+                                ?.toInt()
+                                ?: 0,
+                            address = child.child("address")
+                                .getValue(String::class.java)
+                                .orEmpty(),
+                            contactNumber = child.child("contactNumber")
+                                .getValue(String::class.java)
+                                .orEmpty(),
+                            birthday = child.child("birthday")
+                                .getValue(String::class.java)
                                 .orEmpty()
                         )
                     }
@@ -5633,7 +6268,10 @@ fun EmployeesScreen(
                         if (
                             role != "worker" ||
                             approved ||
-                            employmentStatus != "removed"
+                            (
+                                    employmentStatus != "removed" &&
+                                            employmentStatus != "resigned"
+                                    )
                         ) {
                             return@mapNotNull null
                         }
@@ -5666,6 +6304,15 @@ fun EmployeesScreen(
             activeWorkersQuery.removeEventListener(activeListener)
             removedWorkersQuery.removeEventListener(removedListener)
         }
+    }
+
+    employeeToView?.let { employee ->
+        WorkerPublicProfileDialog(
+            employee = employee,
+            onDismiss = {
+                employeeToView = null
+            }
+        )
     }
 
     employeeToRemove?.let { employee ->
@@ -6101,6 +6748,9 @@ fun EmployeesScreen(
                             actionColor = Color(0xFFC62828),
                             onActionClick = {
                                 employeeToRemove = employee
+                            },
+                            onLongClick = {
+                                employeeToView = employee
                             }
                         )
                     }
@@ -6132,7 +6782,8 @@ fun EmployeesScreen(
                             actionColor = SafeGreen,
                             onActionClick = {
                                 employeeToRestore = employee
-                            }
+                            },
+                            onLongClick = {}
                         )
                     }
                 }
@@ -6166,15 +6817,22 @@ fun EmptyEmployeeCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EmployeeCard(
     employee: EmployeeSummary,
     actionLabel: String,
     actionColor: Color,
-    onActionClick: () -> Unit
+    onActionClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onLongClick
+            ),
         colors = CardDefaults.cardColors(
             containerColor = Color.White
         ),
@@ -6224,6 +6882,101 @@ fun EmployeeCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+fun WorkerPublicProfileDialog(
+    employee: EmployeeSummary,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Worker Information",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                WorkerInfoRow(
+                    label = "Name",
+                    value = employee.fullName
+                )
+
+                WorkerInfoRow(
+                    label = "Email",
+                    value = employee.email
+                )
+
+                WorkerInfoRow(
+                    label = "Age",
+                    value = if (employee.age > 0) {
+                        employee.age.toString()
+                    } else {
+                        "Not provided"
+                    }
+                )
+
+                WorkerInfoRow(
+                    label = "Birthday",
+                    value = employee.birthday.ifBlank {
+                        "Not provided"
+                    }
+                )
+
+                WorkerInfoRow(
+                    label = "Contact No.",
+                    value = employee.contactNumber.ifBlank {
+                        "Not provided"
+                    }
+                )
+
+                WorkerInfoRow(
+                    label = "Address",
+                    value = employee.address.ifBlank {
+                        "Not provided"
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text(
+                    text = "Close",
+                    color = Blue,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    )
+}
+
+@Composable
+fun WorkerInfoRow(
+    label: String,
+    value: String
+) {
+    Column {
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            color = Color.Gray,
+            fontWeight = FontWeight.Medium
+        )
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        Text(
+            text = value,
+            fontSize = 15.sp,
+            color = Color(0xFF222222)
+        )
     }
 }
 
@@ -6484,6 +7237,7 @@ private fun activityColor(type: String): Color {
         "employee_approved" -> SafeGreen
         "employee_restored" -> SafeGreen
         "employee_removed" -> Color(0xFFC62828)
+        "worker_resigned" -> Color(0xFFC62828)
         "login" -> Blue
         "alert" -> WarningOrange
         "pond_added" -> Blue
@@ -6615,116 +7369,1538 @@ fun SettingsScreen(
     pond: PondSummary,
     onLogout: () -> Unit
 ) {
+    var showAccount by remember(user.uid) {
+        mutableStateOf(false)
+    }
+
+    var showFarm by remember(user.uid, user.farmId) {
+        mutableStateOf(false)
+    }
+
+    if (showAccount) {
+        AccountSettingsScreen(
+            user = user,
+            onBack = {
+                showAccount = false
+            },
+            onLogout = onLogout
+        )
+        return
+    }
+
+    if (showFarm) {
+        FarmSettingsScreen(
+            user = user,
+            onBack = {
+                showFarm = false
+            }
+        )
+        return
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = LightBlue
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            PageHeader(title = "Settings")
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item {
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
+                item {
+                    SettingsOptionCard(
+                        title = "Account",
+                        subtitle = if (user.role == "admin") {
+                            "Name, email, password, and logout"
+                        } else {
+                            "Profile, email, password, logout, and leave farm"
+                        },
+                        onClick = {
+                            showAccount = true
+                        }
+                    )
+                }
+
+                item {
+                    SettingsOptionCard(
+                        title = "Farm",
+                        subtitle = if (user.role == "admin") {
+                            "Photo, farm name, and description"
+                        } else {
+                            "View farm information"
+                        },
+                        onClick = {
+                            showFarm = true
+                        }
+                    )
+                }
+
+                item {
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsOptionCard(
+    title: String,
+    subtitle: String = "",
+    danger: Boolean = false,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White
+        ),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = 2.dp
+        ),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = title,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (danger) {
+                        Color(0xFFC62828)
+                    } else {
+                        Color(0xFF222222)
+                    }
+                )
+
+                if (subtitle.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(3.dp))
+
+                    Text(
+                        text = subtitle,
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                }
+            }
+
+            Text(
+                text = "›",
+                fontSize = 24.sp,
+                color = Color.Gray
+            )
+        }
+    }
+}
+
+@Composable
+fun FarmSettingsScreen(
+    user: CrayFarmUser,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+
+    var farmName by remember(user.farmId) {
+        mutableStateOf("")
+    }
+
+    var description by remember(user.farmId) {
+        mutableStateOf("")
+    }
+
+    var photoBase64 by remember(user.farmId) {
+        mutableStateOf("")
+    }
+
+    var isLoading by remember(user.farmId) {
+        mutableStateOf(true)
+    }
+
+    var isSaving by remember {
+        mutableStateOf(false)
+    }
+
+    var message by remember {
+        mutableStateOf("")
+    }
+
+    var messageIsSuccess by remember {
+        mutableStateOf(false)
+    }
+
+    var showNameDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var showDescriptionDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var showPhotoConfirmation by remember {
+        mutableStateOf(false)
+    }
+
+    var editedFarmName by remember {
+        mutableStateOf("")
+    }
+
+    var editedDescription by remember {
+        mutableStateOf("")
+    }
+
+    var pendingPhotoBase64 by remember {
+        mutableStateOf("")
+    }
+
+    val farmRef = remember(user.farmId) {
+        FirebaseDatabase.getInstance()
+            .getReference("farms")
+            .child(user.farmId)
+    }
+
+    val photoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null && user.role == "admin") {
+            try {
+                val encoded = compressFarmPhotoToBase64(
+                    context = context,
+                    uri = uri
+                )
+
+                if (encoded.isBlank()) {
+                    messageIsSuccess = false
+                    message = "Unable to process the selected photo."
+                } else {
+                    pendingPhotoBase64 = encoded
+                    showPhotoConfirmation = true
+                }
+            } catch (exception: Exception) {
+                messageIsSuccess = false
+                message = exception.message
+                    ?: "Unable to process the selected photo."
+            }
+        }
+    }
+
+    DisposableEffect(farmRef) {
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                farmName = snapshot.child("farmName")
+                    .getValue(String::class.java)
+                    .orEmpty()
+                    .ifBlank {
+                        snapshot.child("name")
+                            .getValue(String::class.java)
+                            .orEmpty()
+                    }
+
+                description = snapshot.child("description")
+                    .getValue(String::class.java)
+                    .orEmpty()
+
+                photoBase64 = snapshot.child("photoBase64")
+                    .getValue(String::class.java)
+                    .orEmpty()
+
+                isLoading = false
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                isLoading = false
+                messageIsSuccess = false
+                message = error.message
+            }
+        }
+
+        farmRef.addValueEventListener(listener)
+
+        onDispose {
+            farmRef.removeEventListener(listener)
+        }
+    }
+
+    if (showNameDialog && user.role == "admin") {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isSaving) {
+                    showNameDialog = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Change Farm Name",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value = editedFarmName,
+                    onValueChange = {
+                        editedFarmName = it.take(80)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = {
+                        Text("Farm name")
+                    },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val cleanName = editedFarmName.trim()
+
+                        if (cleanName.length < 2) {
+                            messageIsSuccess = false
+                            message = "Enter a valid farm name."
+                            return@TextButton
+                        }
+
+                        isSaving = true
+
+                        farmRef.updateChildren(
+                            mapOf<String, Any>(
+                                "farmName" to cleanName,
+                                "name" to cleanName,
+                                "profileUpdatedAt" to
+                                        System.currentTimeMillis()
+                            )
+                        )
+                            .addOnSuccessListener {
+                                isSaving = false
+                                showNameDialog = false
+                                messageIsSuccess = true
+                                message = "Farm name updated."
+                            }
+                            .addOnFailureListener { exception ->
+                                isSaving = false
+                                messageIsSuccess = false
+                                message = exception.message
+                                    ?: "Unable to update farm name."
+                            }
+                    },
+                    enabled = !isSaving
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Confirm",
+                            color = Blue,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showNameDialog = false
+                    },
+                    enabled = !isSaving
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showDescriptionDialog && user.role == "admin") {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isSaving) {
+                    showDescriptionDialog = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Edit Farm Description",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value = editedDescription,
+                    onValueChange = {
+                        editedDescription = it.take(500)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = {
+                        Text("Description")
+                    },
+                    supportingText = {
+                        Text("${editedDescription.length}/500")
+                    },
+                    minLines = 4,
+                    maxLines = 7
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        isSaving = true
+
+                        farmRef.child("description")
+                            .setValue(editedDescription.trim())
+                            .addOnSuccessListener {
+                                isSaving = false
+                                showDescriptionDialog = false
+                                messageIsSuccess = true
+                                message = "Farm description updated."
+                            }
+                            .addOnFailureListener { exception ->
+                                isSaving = false
+                                messageIsSuccess = false
+                                message = exception.message
+                                    ?: "Unable to update farm description."
+                            }
+                    },
+                    enabled = !isSaving
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Confirm",
+                            color = Blue,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showDescriptionDialog = false
+                    },
+                    enabled = !isSaving
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showPhotoConfirmation && user.role == "admin") {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isSaving) {
+                    showPhotoConfirmation = false
+                    pendingPhotoBase64 = ""
+                }
+            },
+            title = {
+                Text(
+                    text = "Change Farm Photo?",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "Use the selected image as the new farm photo?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        isSaving = true
+
+                        farmRef.child("photoBase64")
+                            .setValue(pendingPhotoBase64)
+                            .addOnSuccessListener {
+                                isSaving = false
+                                showPhotoConfirmation = false
+                                pendingPhotoBase64 = ""
+                                messageIsSuccess = true
+                                message = "Farm photo updated."
+                            }
+                            .addOnFailureListener { exception ->
+                                isSaving = false
+                                messageIsSuccess = false
+                                message = exception.message
+                                    ?: "Unable to update farm photo."
+                            }
+                    },
+                    enabled = !isSaving
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Confirm",
+                            color = Blue,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showPhotoConfirmation = false
+                        pendingPhotoBase64 = ""
+                    },
+                    enabled = !isSaving
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = LightBlue
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Blue)
+                    .statusBarsPadding()
+                    .padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(
+                    onClick = onBack
+                ) {
+                    Text(
+                        text = "‹",
+                        color = Color.White,
+                        fontSize = 28.sp
+                    )
+                }
+
+                Text(
+                    text = "Farm",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            if (isLoading) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+
+                return@Column
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item {
+                    Spacer(modifier = Modifier.height(26.dp))
+                }
+
+                item {
+                    Box(
+                        modifier = Modifier
+                            .width(132.dp)
+                            .height(105.dp)
+                    ) {
+                        FarmPhotoPreview(
+                            photoBase64 = photoBase64,
+                            farmName = farmName.ifBlank {
+                                "Farm"
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+
+                        if (user.role == "admin") {
+                            Card(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(4.dp)
+                                    .clickable {
+                                        photoPicker.launch("image/*")
+                                    },
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color.White
+                                ),
+                                elevation = CardDefaults.cardElevation(
+                                    defaultElevation = 3.dp
+                                ),
+                                shape = RoundedCornerShape(18.dp)
+                            ) {
+                                Text(
+                                    text = "✎",
+                                    modifier = Modifier.padding(
+                                        horizontal = 8.dp,
+                                        vertical = 4.dp
+                                    ),
+                                    color = Color(0xFF333333),
+                                    fontSize = 17.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+
+                item {
+                    FarmSettingRow(
+                        label = "Name",
+                        value = farmName.ifBlank {
+                            "Not provided"
+                        },
+                        editable = user.role == "admin",
+                        onEdit = {
+                            editedFarmName = farmName
+                            message = ""
+                            showNameDialog = true
+                        }
+                    )
+                }
+
+                item {
+                    FarmSettingRow(
+                        label = "Description",
+                        value = description.ifBlank {
+                            "No description added"
+                        },
+                        editable = user.role == "admin",
+                        onEdit = {
+                            editedDescription = description
+                            message = ""
+                            showDescriptionDialog = true
+                        }
+                    )
+                }
+
+                if (user.role != "admin") {
+                    item {
+                        Text(
+                            text = "Farm information is managed by the farm owner.",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                            textAlign = TextAlign.Center,
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                if (message.isNotBlank()) {
+                    item {
+                        Text(
+                            text = message,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp),
+                            color = if (messageIsSuccess) {
+                                SafeGreen
+                            } else {
+                                Color(0xFFC62828)
+                            },
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                item {
+                    Spacer(modifier = Modifier.height(18.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FarmSettingRow(
+    label: String,
+    value: String,
+    editable: Boolean,
+    onEdit: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White
+        ),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = 2.dp
+        ),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = label,
+                    fontSize = 13.sp,
+                    color = Color(0xFF222222),
+                    fontWeight = FontWeight.Medium
+                )
+
+                Spacer(modifier = Modifier.height(3.dp))
+
+                Text(
+                    text = value,
+                    fontSize = 12.sp,
+                    color = Color.Gray,
+                    maxLines = if (label == "Description") 3 else 1
+                )
+            }
+
+            if (editable) {
+                TextButton(
+                    onClick = onEdit,
+                    contentPadding = PaddingValues(
+                        horizontal = 8.dp,
+                        vertical = 4.dp
+                    )
+                ) {
+                    Text(
+                        text = "✎",
+                        color = Color(0xFF333333),
+                        fontSize = 18.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FarmPhotoPreview(
+    photoBase64: String,
+    farmName: String,
+    modifier: Modifier = Modifier
+) {
+    val bitmap = remember(photoBase64) {
+        decodeFarmPhoto(photoBase64)
+    }
+
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFFE8EAF6)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "$farmName farm photo",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "🏡",
+                        fontSize = 42.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "No farm photo",
+                        color = Color.Gray,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FarmInformationCard(
+    label: String,
+    value: String
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White
+        ),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = 2.dp
+        ),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                color = Color.Gray,
+                fontWeight = FontWeight.Medium
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = value,
+                fontSize = 15.sp,
+                color = Color(0xFF222222)
+            )
+        }
+    }
+}
+
+private fun updateFarmProfile(
+    farmId: String,
+    farmName: String,
+    description: String,
+    photoBase64: String,
+    onSuccess: () -> Unit,
+    onError: (String) -> Unit
+) {
+    if (farmId.isBlank()) {
+        onError("This account is not connected to a farm.")
+        return
+    }
+
+    val updates = mapOf<String, Any>(
+        "farmName" to farmName,
+        "name" to farmName,
+        "description" to description,
+        "photoBase64" to photoBase64,
+        "profileUpdatedAt" to System.currentTimeMillis()
+    )
+
+    FirebaseDatabase.getInstance()
+        .getReference("farms")
+        .child(farmId)
+        .updateChildren(updates)
+        .addOnSuccessListener {
+            onSuccess()
+        }
+        .addOnFailureListener { exception ->
+            onError(
+                exception.message
+                    ?: "Unable to update farm information."
+            )
+        }
+}
+
+private fun compressFarmPhotoToBase64(
+    context: android.content.Context,
+    uri: android.net.Uri
+): String {
+    val original = context.contentResolver
+        .openInputStream(uri)
+        ?.use { input ->
+            BitmapFactory.decodeStream(input)
+        }
+        ?: return ""
+
+    val maxDimension = 1000
+    val width = original.width
+    val height = original.height
+
+    val scale = if (
+        width > maxDimension ||
+        height > maxDimension
+    ) {
+        minOf(
+            maxDimension.toFloat() / width.toFloat(),
+            maxDimension.toFloat() / height.toFloat()
+        )
+    } else {
+        1f
+    }
+
+    val resized = if (scale < 1f) {
+        Bitmap.createScaledBitmap(
+            original,
+            (width * scale).toInt().coerceAtLeast(1),
+            (height * scale).toInt().coerceAtLeast(1),
+            true
+        )
+    } else {
+        original
+    }
+
+    val output = ByteArrayOutputStream()
+
+    resized.compress(
+        Bitmap.CompressFormat.JPEG,
+        65,
+        output
+    )
+
+    val bytes = output.toByteArray()
+
+    if (resized !== original) {
+        resized.recycle()
+    }
+
+    original.recycle()
+
+    // Keep the RTDB payload small enough for a capstone profile image.
+    if (bytes.size > 350_000) {
+        throw IllegalArgumentException(
+            "The selected photo is still too large. Please choose a smaller image."
+        )
+    }
+
+    return Base64.encodeToString(
+        bytes,
+        Base64.NO_WRAP
+    )
+}
+
+private fun decodeFarmPhoto(
+    encoded: String
+): Bitmap? {
+    if (encoded.isBlank()) {
+        return null
+    }
+
+    return try {
+        val bytes = Base64.decode(
+            encoded,
+            Base64.NO_WRAP
+        )
+
+        BitmapFactory.decodeByteArray(
+            bytes,
+            0,
+            bytes.size
+        )
+    } catch (_: Exception) {
+        null
+    }
+}
+
+@Composable
+fun AccountSettingsScreen(
+    user: CrayFarmUser,
+    onBack: () -> Unit,
+    onLogout: () -> Unit
+) {
+    var displayedEmail by remember(user.uid) {
+        mutableStateOf(user.email)
+    }
+
+    var displayedName by remember(user.uid) {
+        mutableStateOf(user.fullName)
+    }
+
+    var showNameDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var showNameConfirmation by remember {
+        mutableStateOf(false)
+    }
+
+    var editedName by remember {
+        mutableStateOf("")
+    }
+
+    var showPersonalInfoDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var showPersonalInfoConfirmation by remember {
+        mutableStateOf(false)
+    }
+
+    var personalName by remember(user.uid) {
+        mutableStateOf(user.fullName)
+    }
+
+    var personalAge by remember(user.uid) {
+        mutableStateOf(
+            if (user.age > 0) user.age.toString() else ""
+        )
+    }
+
+    var personalAddress by remember(user.uid) {
+        mutableStateOf(user.address)
+    }
+
+    var personalContact by remember(user.uid) {
+        mutableStateOf(user.contactNumber)
+    }
+
+    var personalBirthday by remember(user.uid) {
+        mutableStateOf(user.birthday)
+    }
+
+    var pendingPersonalName by remember {
+        mutableStateOf("")
+    }
+
+    var pendingPersonalAge by remember {
+        mutableStateOf(0)
+    }
+
+    var pendingPersonalAddress by remember {
+        mutableStateOf("")
+    }
+
+    var pendingPersonalContact by remember {
+        mutableStateOf("")
+    }
+
+    var pendingPersonalBirthday by remember {
+        mutableStateOf("")
+    }
+
     var showLogoutConfirmation by remember {
         mutableStateOf(false)
     }
 
-    var minTemperature by remember(pond.pondId) {
-        mutableStateOf("20")
-    }
-    var maxTemperature by remember(pond.pondId) {
-        mutableStateOf("30")
-    }
-    var minPh by remember(pond.pondId) {
-        mutableStateOf("6.5")
-    }
-    var maxPh by remember(pond.pondId) {
-        mutableStateOf("8.5")
-    }
-    var maxTurbidity by remember(pond.pondId) {
-        mutableStateOf("25")
-    }
-    var minTds by remember(pond.pondId) {
-        mutableStateOf("200")
-    }
-    var maxTds by remember(pond.pondId) {
-        mutableStateOf("500")
-    }
-    var minWaterLevel by remember(pond.pondId) {
-        mutableStateOf("40")
-    }
-
-    var isLoadingThresholds by remember(pond.pondId) {
-        mutableStateOf(true)
-    }
-    var isSavingThresholds by remember {
+    var showEmailDialog by remember {
         mutableStateOf(false)
     }
-    var thresholdMessage by remember {
+
+    var showEmailConfirmation by remember {
+        mutableStateOf(false)
+    }
+
+    var newEmail by remember {
         mutableStateOf("")
     }
-    var thresholdMessageIsSuccess by remember {
+
+    var emailCurrentPassword by remember {
+        mutableStateOf("")
+    }
+
+    var showPasswordDialog by remember {
         mutableStateOf(false)
     }
 
-    LaunchedEffect(user.farmId, pond.pondId) {
-        FirebaseDatabase.getInstance()
-            .getReference("farms")
-            .child(user.farmId)
-            .child("ponds")
-            .child(pond.pondId)
-            .child("thresholds")
-            .get()
-            .addOnSuccessListener { snapshot ->
-                minTemperature = snapshot.readNumberOrDefault(
-                    "minTemperature",
-                    20.0
-                ).formatThreshold()
+    var showPasswordConfirmation by remember {
+        mutableStateOf(false)
+    }
 
-                maxTemperature = snapshot.readNumberOrDefault(
-                    "maxTemperature",
-                    30.0
-                ).formatThreshold()
+    var currentPasswordForPasswordChange by remember {
+        mutableStateOf("")
+    }
 
-                minPh = snapshot.readNumberOrDefault(
-                    "minPh",
-                    6.5
-                ).formatThreshold()
+    var newPassword by remember {
+        mutableStateOf("")
+    }
 
-                maxPh = snapshot.readNumberOrDefault(
-                    "maxPh",
-                    8.5
-                ).formatThreshold()
+    var confirmNewPassword by remember {
+        mutableStateOf("")
+    }
 
-                maxTurbidity = snapshot.readNumberOrDefault(
-                    "maxTurbidity",
-                    25.0
-                ).formatThreshold()
+    var showResignDialog by remember {
+        mutableStateOf(false)
+    }
 
-                minTds = snapshot.readNumberOrDefault(
-                    "minTds",
-                    200.0
-                ).formatThreshold()
+    var resignationMessage by remember {
+        mutableStateOf("")
+    }
 
-                maxTds = snapshot.readNumberOrDefault(
-                    "maxTds",
-                    500.0
-                ).formatThreshold()
+    var isProcessing by remember {
+        mutableStateOf(false)
+    }
 
-                minWaterLevel = snapshot.readNumberOrDefault(
-                    "minWaterLevel",
-                    40.0
-                ).formatThreshold()
+    var accountMessage by remember {
+        mutableStateOf("")
+    }
 
-                isLoadingThresholds = false
+    var accountMessageSuccess by remember {
+        mutableStateOf(false)
+    }
+
+    if (showNameDialog && user.role == "admin") {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isProcessing) {
+                    showNameDialog = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Change Name",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value = editedName,
+                    onValueChange = {
+                        editedName = it.take(60)
+                        accountMessage = ""
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = {
+                        Text("Full name")
+                    },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val cleanName = editedName.trim()
+
+                        when {
+                            cleanName.length < 2 -> {
+                                accountMessageSuccess = false
+                                accountMessage =
+                                    "Enter a valid full name."
+                            }
+
+                            cleanName == displayedName -> {
+                                accountMessageSuccess = false
+                                accountMessage =
+                                    "Enter a different name."
+                            }
+
+                            else -> {
+                                showNameDialog = false
+                                showNameConfirmation = true
+                            }
+                        }
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text(
+                        text = "Continue",
+                        color = Blue,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showNameDialog = false
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text("Cancel")
+                }
             }
-            .addOnFailureListener { exception ->
-                isLoadingThresholds = false
-                thresholdMessageIsSuccess = false
-                thresholdMessage =
-                    exception.message
-                        ?: "Unable to load pond thresholds."
+        )
+    }
+
+    if (showNameConfirmation && user.role == "admin") {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isProcessing) {
+                    showNameConfirmation = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Confirm Name Change",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text =
+                        "Change your account name from $displayedName to ${editedName.trim()}?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        isProcessing = true
+                        accountMessage = ""
+
+                        updateUserDisplayName(
+                            uid = user.uid,
+                            newName = editedName.trim(),
+                            onSuccess = {
+                                displayedName = editedName.trim()
+                                editedName = ""
+                                isProcessing = false
+                                showNameConfirmation = false
+                                accountMessageSuccess = true
+                                accountMessage =
+                                    "Name updated successfully."
+                            },
+                            onError = { error ->
+                                isProcessing = false
+                                showNameConfirmation = false
+                                accountMessageSuccess = false
+                                accountMessage = error
+                            }
+                        )
+                    },
+                    enabled = !isProcessing
+                ) {
+                    if (isProcessing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Change Name",
+                            color = Blue,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showNameConfirmation = false
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text("Cancel")
+                }
             }
+        )
+    }
+
+    if (showPersonalInfoDialog && user.role == "worker") {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isProcessing) {
+                    showPersonalInfoDialog = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Personal Information",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    item {
+                        Text(
+                            text = "This information can be viewed by the owner of your current farm.",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = personalName,
+                            onValueChange = {
+                                personalName = it.take(60)
+                                accountMessage = ""
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Full name")
+                            },
+                            singleLine = true
+                        )
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = personalAge,
+                            onValueChange = { value ->
+                                personalAge = value
+                                    .filter { it.isDigit() }
+                                    .take(3)
+                                accountMessage = ""
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Age")
+                            },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Number
+                            )
+                        )
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = personalBirthday,
+                            onValueChange = {
+                                personalBirthday = it.take(10)
+                                accountMessage = ""
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Birthday")
+                            },
+                            supportingText = {
+                                Text("Format: YYYY-MM-DD")
+                            },
+                            singleLine = true
+                        )
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = personalContact,
+                            onValueChange = { value ->
+                                personalContact = value
+                                    .filter { character ->
+                                        character.isDigit() ||
+                                                character == '+' ||
+                                                character == '-' ||
+                                                character == ' '
+                                    }
+                                    .take(20)
+                                accountMessage = ""
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Contact No.")
+                            },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Phone
+                            )
+                        )
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = personalAddress,
+                            onValueChange = {
+                                personalAddress = it.take(180)
+                                accountMessage = ""
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Address")
+                            },
+                            minLines = 2,
+                            maxLines = 4
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val cleanName = personalName.trim()
+                        val ageValue = personalAge.toIntOrNull()
+                        val cleanBirthday = personalBirthday.trim()
+                        val cleanContact = personalContact.trim()
+                        val cleanAddress = personalAddress.trim()
+
+                        when {
+                            cleanName.length < 2 -> {
+                                accountMessageSuccess = false
+                                accountMessage =
+                                    "Enter a valid full name."
+                            }
+
+                            ageValue == null || ageValue !in 1..120 -> {
+                                accountMessageSuccess = false
+                                accountMessage =
+                                    "Enter a valid age."
+                            }
+
+                            !isValidBirthday(cleanBirthday) -> {
+                                accountMessageSuccess = false
+                                accountMessage =
+                                    "Enter birthday as YYYY-MM-DD."
+                            }
+
+                            cleanContact.length < 7 -> {
+                                accountMessageSuccess = false
+                                accountMessage =
+                                    "Enter a valid contact number."
+                            }
+
+                            cleanAddress.length < 3 -> {
+                                accountMessageSuccess = false
+                                accountMessage =
+                                    "Enter a valid address."
+                            }
+
+                            else -> {
+                                pendingPersonalName = cleanName
+                                pendingPersonalAge = ageValue
+                                pendingPersonalBirthday = cleanBirthday
+                                pendingPersonalContact = cleanContact
+                                pendingPersonalAddress = cleanAddress
+
+                                showPersonalInfoDialog = false
+                                showPersonalInfoConfirmation = true
+                            }
+                        }
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text(
+                        text = "Continue",
+                        color = Blue,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showPersonalInfoDialog = false
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (
+        showPersonalInfoConfirmation &&
+        user.role == "worker"
+    ) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isProcessing) {
+                    showPersonalInfoConfirmation = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Confirm Profile Update",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text =
+                        "Save these personal details? Your current farm owner will be able to view them."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        isProcessing = true
+                        accountMessage = ""
+
+                        updateWorkerPersonalInformation(
+                            uid = user.uid,
+                            fullName = pendingPersonalName,
+                            age = pendingPersonalAge,
+                            birthday = pendingPersonalBirthday,
+                            contactNumber = pendingPersonalContact,
+                            address = pendingPersonalAddress,
+                            onSuccess = {
+                                displayedName = pendingPersonalName
+                                personalName = pendingPersonalName
+                                personalAge =
+                                    pendingPersonalAge.toString()
+                                personalBirthday =
+                                    pendingPersonalBirthday
+                                personalContact =
+                                    pendingPersonalContact
+                                personalAddress =
+                                    pendingPersonalAddress
+
+                                isProcessing = false
+                                showPersonalInfoConfirmation = false
+                                accountMessageSuccess = true
+                                accountMessage =
+                                    "Personal information updated successfully."
+                            },
+                            onError = { error ->
+                                isProcessing = false
+                                showPersonalInfoConfirmation = false
+                                accountMessageSuccess = false
+                                accountMessage = error
+                            }
+                        )
+                    },
+                    enabled = !isProcessing
+                ) {
+                    if (isProcessing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Save",
+                            color = Blue,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showPersonalInfoConfirmation = false
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     if (showLogoutConfirmation) {
         AlertDialog(
             onDismissRequest = {
-                showLogoutConfirmation = false
+                if (!isProcessing) {
+                    showLogoutConfirmation = false
+                }
             },
             title = {
                 Text(
-                    text = "Logout?",
+                    text = "Confirm Logout",
                     fontWeight = FontWeight.Bold
                 )
             },
@@ -6759,6 +8935,486 @@ fun SettingsScreen(
         )
     }
 
+    if (showEmailDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isProcessing) {
+                    showEmailDialog = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Change Email",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Current email: $displayedEmail",
+                        fontSize = 13.sp,
+                        color = Color.Gray
+                    )
+
+                    OutlinedTextField(
+                        value = newEmail,
+                        onValueChange = {
+                            newEmail = it.trim()
+                            accountMessage = ""
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = {
+                            Text("New email")
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Email
+                        )
+                    )
+
+                    OutlinedTextField(
+                        value = emailCurrentPassword,
+                        onValueChange = {
+                            emailCurrentPassword = it
+                            accountMessage = ""
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = {
+                            Text("Current password")
+                        },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password
+                        )
+                    )
+
+                    Text(
+                        text = "Your current password is required to verify that this account belongs to you.",
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val cleanEmail = newEmail.trim()
+
+                        when {
+                            !Patterns.EMAIL_ADDRESS.matcher(cleanEmail).matches() -> {
+                                accountMessageSuccess = false
+                                accountMessage = "Enter a valid email address."
+                            }
+
+                            emailCurrentPassword.isBlank() -> {
+                                accountMessageSuccess = false
+                                accountMessage = "Enter your current password."
+                            }
+
+                            cleanEmail.equals(
+                                displayedEmail,
+                                ignoreCase = true
+                            ) -> {
+                                accountMessageSuccess = false
+                                accountMessage = "Enter a different email address."
+                            }
+
+                            else -> {
+                                showEmailDialog = false
+                                showEmailConfirmation = true
+                            }
+                        }
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text(
+                        text = "Continue",
+                        color = Blue,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showEmailDialog = false
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showEmailConfirmation) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isProcessing) {
+                    showEmailConfirmation = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Confirm Email Change",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "Change your account email from $displayedEmail to ${newEmail.trim()}?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        isProcessing = true
+                        accountMessage = ""
+
+                        updateCrayFarmEmail(
+                            currentPassword = emailCurrentPassword,
+                            newEmail = newEmail.trim(),
+                            onSuccess = {
+                                displayedEmail = newEmail.trim()
+                                newEmail = ""
+                                emailCurrentPassword = ""
+                                isProcessing = false
+                                showEmailConfirmation = false
+                                accountMessageSuccess = true
+                                accountMessage =
+                                    "Email updated successfully."
+                            },
+                            onError = { error ->
+                                isProcessing = false
+                                showEmailConfirmation = false
+                                accountMessageSuccess = false
+                                accountMessage = error
+                            }
+                        )
+                    },
+                    enabled = !isProcessing
+                ) {
+                    if (isProcessing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Change Email",
+                            color = Blue,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showEmailConfirmation = false
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showPasswordDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isProcessing) {
+                    showPasswordDialog = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Update Password",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = currentPasswordForPasswordChange,
+                        onValueChange = {
+                            currentPasswordForPasswordChange = it
+                            accountMessage = ""
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = {
+                            Text("Current password")
+                        },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password
+                        )
+                    )
+
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = {
+                            newPassword = it
+                            accountMessage = ""
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = {
+                            Text("New password")
+                        },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password
+                        )
+                    )
+
+                    OutlinedTextField(
+                        value = confirmNewPassword,
+                        onValueChange = {
+                            confirmNewPassword = it
+                            accountMessage = ""
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = {
+                            Text("Confirm new password")
+                        },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        when {
+                            currentPasswordForPasswordChange.isBlank() -> {
+                                accountMessageSuccess = false
+                                accountMessage = "Enter your current password."
+                            }
+
+                            newPassword.length < 6 -> {
+                                accountMessageSuccess = false
+                                accountMessage =
+                                    "New password must contain at least 6 characters."
+                            }
+
+                            newPassword != confirmNewPassword -> {
+                                accountMessageSuccess = false
+                                accountMessage = "New passwords do not match."
+                            }
+
+                            newPassword == currentPasswordForPasswordChange -> {
+                                accountMessageSuccess = false
+                                accountMessage =
+                                    "Your new password must be different from your current password."
+                            }
+
+                            else -> {
+                                showPasswordDialog = false
+                                showPasswordConfirmation = true
+                            }
+                        }
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text(
+                        text = "Continue",
+                        color = Blue,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showPasswordDialog = false
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showPasswordConfirmation) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isProcessing) {
+                    showPasswordConfirmation = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Confirm Password Update",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to update your CrayFarm account password?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        isProcessing = true
+                        accountMessage = ""
+
+                        updateCrayFarmPassword(
+                            currentPassword =
+                                currentPasswordForPasswordChange,
+                            newPassword = newPassword,
+                            onSuccess = {
+                                currentPasswordForPasswordChange = ""
+                                newPassword = ""
+                                confirmNewPassword = ""
+                                isProcessing = false
+                                showPasswordConfirmation = false
+                                accountMessageSuccess = true
+                                accountMessage =
+                                    "Password updated successfully."
+                            },
+                            onError = { error ->
+                                isProcessing = false
+                                showPasswordConfirmation = false
+                                accountMessageSuccess = false
+                                accountMessage = error
+                            }
+                        )
+                    },
+                    enabled = !isProcessing
+                ) {
+                    if (isProcessing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Update Password",
+                            color = Blue,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showPasswordConfirmation = false
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showResignDialog && user.role == "worker") {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isProcessing) {
+                    showResignDialog = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Leave Farm?",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "This will remove your worker account from the current farm. You will need to be approved again before joining a farm."
+                    )
+
+                    OutlinedTextField(
+                        value = resignationMessage,
+                        onValueChange = {
+                            resignationMessage = it.take(300)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = {
+                            Text("Message to farm owner (optional)")
+                        },
+                        minLines = 3,
+                        maxLines = 5
+                    )
+
+                    Text(
+                        text = "${resignationMessage.length}/300",
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.End,
+                        fontSize = 11.sp,
+                        color = Color.Gray
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        isProcessing = true
+                        accountMessage = ""
+
+                        resignWorkerFromFarm(
+                            user = user,
+                            message = resignationMessage.trim(),
+                            onSuccess = {
+                                isProcessing = false
+                                showResignDialog = false
+                                onLogout()
+                            },
+                            onError = { error ->
+                                isProcessing = false
+                                accountMessageSuccess = false
+                                accountMessage = error
+                            }
+                        )
+                    },
+                    enabled = !isProcessing
+                ) {
+                    if (isProcessing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Confirm Leave Farm",
+                            color = Color(0xFFC62828),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showResignDialog = false
+                    },
+                    enabled = !isProcessing
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = LightBlue
@@ -6766,16 +9422,40 @@ fun SettingsScreen(
         Column(
             modifier = Modifier.fillMaxSize()
         ) {
-            PageHeader(title = "Settings")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Blue)
+                    .statusBarsPadding()
+                    .padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(
+                    onClick = onBack
+                ) {
+                    Text(
+                        text = "‹",
+                        color = Color.White,
+                        fontSize = 28.sp
+                    )
+                }
+
+                Text(
+                    text = "Account",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
 
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 item {
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                 }
 
                 item {
@@ -6787,26 +9467,26 @@ fun SettingsScreen(
                         elevation = CardDefaults.cardElevation(
                             defaultElevation = 2.dp
                         ),
-                        shape = RoundedCornerShape(12.dp)
+                        shape = RoundedCornerShape(10.dp)
                     ) {
                         Column(
-                            modifier = Modifier.padding(18.dp)
+                            modifier = Modifier.padding(16.dp)
                         ) {
                             Text(
-                                text = user.fullName,
-                                fontSize = 19.sp,
+                                text = displayedName,
+                                fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold
                             )
 
-                            Spacer(modifier = Modifier.height(5.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
 
                             Text(
-                                text = user.email,
+                                text = displayedEmail,
                                 fontSize = 13.sp,
                                 color = Color.Gray
                             )
 
-                            Spacer(modifier = Modifier.height(5.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
 
                             Text(
                                 text = if (user.role == "admin") {
@@ -6822,212 +9502,424 @@ fun SettingsScreen(
                     }
                 }
 
-                item {
-                    Text(
-                        text = "${pond.pondName} Thresholds",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF222222)
-                    )
-                }
-
-                item {
-                    Text(
-                        text = "These values control the Safe, Low, and High labels on this pond's dashboard.",
-                        fontSize = 13.sp,
-                        color = Color.Gray
-                    )
-                }
-
-                if (isLoadingThresholds) {
+                if (accountMessage.isNotBlank()) {
                     item {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            CircularProgressIndicator(
-                                color = Blue
-                            )
-                        }
+                        Text(
+                            text = accountMessage,
+                            modifier = Modifier.fillMaxWidth(),
+                            color = if (accountMessageSuccess) {
+                                SafeGreen
+                            } else {
+                                Color(0xFFC62828)
+                            },
+                            fontSize = 13.sp
+                        )
                     }
-                } else {
+                }
+
+                if (user.role == "admin") {
                     item {
-                        ThresholdSettingsCard(
-                            minTemperature = minTemperature,
-                            onMinTemperatureChanged = {
-                                minTemperature = it
-                                thresholdMessage = ""
-                            },
-                            maxTemperature = maxTemperature,
-                            onMaxTemperatureChanged = {
-                                maxTemperature = it
-                                thresholdMessage = ""
-                            },
-                            minPh = minPh,
-                            onMinPhChanged = {
-                                minPh = it
-                                thresholdMessage = ""
-                            },
-                            maxPh = maxPh,
-                            onMaxPhChanged = {
-                                maxPh = it
-                                thresholdMessage = ""
-                            },
-                            maxTurbidity = maxTurbidity,
-                            onMaxTurbidityChanged = {
-                                maxTurbidity = it
-                                thresholdMessage = ""
-                            },
-                            minTds = minTds,
-                            onMinTdsChanged = {
-                                minTds = it
-                                thresholdMessage = ""
-                            },
-                            maxTds = maxTds,
-                            onMaxTdsChanged = {
-                                maxTds = it
-                                thresholdMessage = ""
-                            },
-                            minWaterLevel = minWaterLevel,
-                            onMinWaterLevelChanged = {
-                                minWaterLevel = it
-                                thresholdMessage = ""
+                        SettingsOptionCard(
+                            title = "Change Name",
+                            subtitle = displayedName,
+                            onClick = {
+                                editedName = displayedName
+                                accountMessage = ""
+                                showNameDialog = true
                             }
                         )
                     }
-
-                    if (thresholdMessage.isNotBlank()) {
-                        item {
-                            Text(
-                                text = thresholdMessage,
-                                modifier = Modifier.fillMaxWidth(),
-                                color = if (thresholdMessageIsSuccess) {
-                                    SafeGreen
-                                } else {
-                                    Color(0xFFC62828)
-                                },
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-
-                    item {
-                        Button(
-                            onClick = {
-                                val values = listOf(
-                                    minTemperature.toDoubleOrNull(),
-                                    maxTemperature.toDoubleOrNull(),
-                                    minPh.toDoubleOrNull(),
-                                    maxPh.toDoubleOrNull(),
-                                    maxTurbidity.toDoubleOrNull(),
-                                    minTds.toDoubleOrNull(),
-                                    maxTds.toDoubleOrNull(),
-                                    minWaterLevel.toDoubleOrNull()
-                                )
-
-                                if (values.any { it == null }) {
-                                    thresholdMessageIsSuccess = false
-                                    thresholdMessage =
-                                        "Enter a valid number in every threshold field."
-                                    return@Button
-                                }
-
-                                val thresholds = PondThresholds(
-                                    minTemperature = values[0]!!,
-                                    maxTemperature = values[1]!!,
-                                    minPh = values[2]!!,
-                                    maxPh = values[3]!!,
-                                    maxTurbidity = values[4]!!,
-                                    minTds = values[5]!!,
-                                    maxTds = values[6]!!,
-                                    minWaterLevel = values[7]!!
-                                )
-
-                                val validationError =
-                                    validatePondThresholds(thresholds)
-
-                                if (validationError != null) {
-                                    thresholdMessageIsSuccess = false
-                                    thresholdMessage = validationError
-                                    return@Button
-                                }
-
-                                isSavingThresholds = true
-                                thresholdMessage = ""
-
-                                savePondThresholds(
-                                    user = user,
-                                    pond = pond,
-                                    thresholds = thresholds,
-                                    onSuccess = {
-                                        isSavingThresholds = false
-                                        thresholdMessageIsSuccess = true
-                                        thresholdMessage =
-                                            "Thresholds saved successfully."
-                                    },
-                                    onError = { error ->
-                                        isSavingThresholds = false
-                                        thresholdMessageIsSuccess = false
-                                        thresholdMessage = error
-                                    }
-                                )
-                            },
-                            enabled = !isSavingThresholds,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Blue,
-                                contentColor = Color.White
-                            ),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            if (isSavingThresholds) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(22.dp),
-                                    color = Color.White,
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
-                                Text(
-                                    text = "Save Thresholds",
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
                 }
 
                 item {
-                    Button(
+                    SettingsOptionCard(
+                        title = "Change Email",
+                        subtitle = displayedEmail,
+                        onClick = {
+                            newEmail = ""
+                            emailCurrentPassword = ""
+                            accountMessage = ""
+                            showEmailDialog = true
+                        }
+                    )
+                }
+
+                item {
+                    SettingsOptionCard(
+                        title = "Update Password",
+                        subtitle = "Change your account password",
+                        onClick = {
+                            currentPasswordForPasswordChange = ""
+                            newPassword = ""
+                            confirmNewPassword = ""
+                            accountMessage = ""
+                            showPasswordDialog = true
+                        }
+                    )
+                }
+
+                item {
+                    SettingsOptionCard(
+                        title = "Logout",
+                        subtitle = "Sign out of this device",
                         onClick = {
                             showLogoutConfirmation = true
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFC62828),
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
+                        }
+                    )
+                }
+
+                if (user.role == "worker" && user.farmId.isNotBlank()) {
+                    item {
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    item {
                         Text(
-                            text = "Logout",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold
+                            text = "Farm Membership",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Gray
+                        )
+                    }
+
+                    item {
+                        SettingsOptionCard(
+                            title = "Resign / Leave Farm",
+                            subtitle = "Leave your current farm and notify the owner",
+                            danger = true,
+                            onClick = {
+                                resignationMessage = ""
+                                accountMessage = ""
+                                showResignDialog = true
+                            }
                         )
                     }
                 }
 
                 item {
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
                 }
             }
         }
+    }
+}
+
+private fun updateUserDisplayName(
+    uid: String,
+    newName: String,
+    onSuccess: () -> Unit,
+    onError: (String) -> Unit
+) {
+    if (uid.isBlank()) {
+        onError("Unable to identify this account.")
+        return
+    }
+
+    FirebaseDatabase.getInstance()
+        .getReference("users")
+        .child(uid)
+        .child("fullName")
+        .setValue(newName)
+        .addOnSuccessListener {
+            onSuccess()
+        }
+        .addOnFailureListener { exception ->
+            onError(
+                exception.message
+                    ?: "Unable to update your name."
+            )
+        }
+}
+
+private fun updateWorkerPersonalInformation(
+    uid: String,
+    fullName: String,
+    age: Int,
+    birthday: String,
+    contactNumber: String,
+    address: String,
+    onSuccess: () -> Unit,
+    onError: (String) -> Unit
+) {
+    if (uid.isBlank()) {
+        onError("Unable to identify this account.")
+        return
+    }
+
+    val updates = mapOf<String, Any>(
+        "fullName" to fullName,
+        "age" to age,
+        "birthday" to birthday,
+        "contactNumber" to contactNumber,
+        "address" to address,
+        "profileUpdatedAt" to System.currentTimeMillis()
+    )
+
+    FirebaseDatabase.getInstance()
+        .getReference("users")
+        .child(uid)
+        .updateChildren(updates)
+        .addOnSuccessListener {
+            onSuccess()
+        }
+        .addOnFailureListener { exception ->
+            onError(
+                exception.message
+                    ?: "Unable to update personal information."
+            )
+        }
+}
+
+private fun isValidBirthday(value: String): Boolean {
+    if (!Regex("""\d{4}-\d{2}-\d{2}""").matches(value)) {
+        return false
+    }
+
+    return try {
+        val formatter = SimpleDateFormat(
+            "yyyy-MM-dd",
+            Locale.US
+        )
+
+        formatter.isLenient = false
+
+        val date = formatter.parse(value)
+            ?: return false
+
+        date.time <= System.currentTimeMillis()
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private fun updateCrayFarmEmail(
+    currentPassword: String,
+    newEmail: String,
+    onSuccess: () -> Unit,
+    onError: (String) -> Unit
+) {
+    val firebaseUser = FirebaseAuth.getInstance().currentUser
+
+    if (firebaseUser == null) {
+        onError("Your session has expired. Please log in again.")
+        return
+    }
+
+    val currentEmail = firebaseUser.email.orEmpty()
+
+    if (currentEmail.isBlank()) {
+        onError("Unable to verify your current email.")
+        return
+    }
+
+    val credential = EmailAuthProvider.getCredential(
+        currentEmail,
+        currentPassword
+    )
+
+    firebaseUser.reauthenticate(credential)
+        .addOnSuccessListener {
+            firebaseUser.updateEmail(newEmail)
+                .addOnSuccessListener {
+                    FirebaseDatabase.getInstance()
+                        .getReference("users")
+                        .child(firebaseUser.uid)
+                        .child("email")
+                        .setValue(newEmail)
+                        .addOnSuccessListener {
+                            onSuccess()
+                        }
+                        .addOnFailureListener { exception ->
+                            onError(
+                                exception.message
+                                    ?: "Email changed in Authentication, but the profile email could not be updated."
+                            )
+                        }
+                }
+                .addOnFailureListener { exception ->
+                    onError(
+                        accountAuthErrorMessage(
+                            exception.message,
+                            fallback = "Unable to update email."
+                        )
+                    )
+                }
+        }
+        .addOnFailureListener { exception ->
+            onError(
+                accountAuthErrorMessage(
+                    exception.message,
+                    fallback = "Current password is incorrect."
+                )
+            )
+        }
+}
+
+private fun updateCrayFarmPassword(
+    currentPassword: String,
+    newPassword: String,
+    onSuccess: () -> Unit,
+    onError: (String) -> Unit
+) {
+    val firebaseUser = FirebaseAuth.getInstance().currentUser
+
+    if (firebaseUser == null) {
+        onError("Your session has expired. Please log in again.")
+        return
+    }
+
+    val currentEmail = firebaseUser.email.orEmpty()
+
+    if (currentEmail.isBlank()) {
+        onError("Unable to verify your account.")
+        return
+    }
+
+    val credential = EmailAuthProvider.getCredential(
+        currentEmail,
+        currentPassword
+    )
+
+    firebaseUser.reauthenticate(credential)
+        .addOnSuccessListener {
+            firebaseUser.updatePassword(newPassword)
+                .addOnSuccessListener {
+                    onSuccess()
+                }
+                .addOnFailureListener { exception ->
+                    onError(
+                        accountAuthErrorMessage(
+                            exception.message,
+                            fallback = "Unable to update password."
+                        )
+                    )
+                }
+        }
+        .addOnFailureListener { exception ->
+            onError(
+                accountAuthErrorMessage(
+                    exception.message,
+                    fallback = "Current password is incorrect."
+                )
+            )
+        }
+}
+
+private fun resignWorkerFromFarm(
+    user: CrayFarmUser,
+    message: String,
+    onSuccess: () -> Unit,
+    onError: (String) -> Unit
+) {
+    if (
+        user.role != "worker" ||
+        user.uid.isBlank() ||
+        user.farmId.isBlank()
+    ) {
+        onError("This worker account is not connected to a farm.")
+        return
+    }
+
+    val database = FirebaseDatabase.getInstance().reference
+    val resignedAt = System.currentTimeMillis()
+
+    val logKey = database
+        .child("farms")
+        .child(user.farmId)
+        .child("activityLogs")
+        .push()
+        .key
+
+    if (logKey == null) {
+        onError("Unable to create a resignation record.")
+        return
+    }
+
+    val logMessage = buildString {
+        append("${user.fullName} left the farm.")
+
+        if (message.isNotBlank()) {
+            append(" Message: ")
+            append(message)
+        }
+    }
+
+    val activityLog = createActivityLogMap(
+        type = "worker_resigned",
+        title = "Worker left farm",
+        message = logMessage,
+        actorUid = user.uid,
+        actorName = user.fullName,
+        targetUid = user.uid,
+        targetName = user.fullName,
+        timestamp = resignedAt
+    )
+
+    val updates = hashMapOf<String, Any?>(
+        "users/${user.uid}/farmId" to "",
+        "users/${user.uid}/previousFarmId" to user.farmId,
+        "users/${user.uid}/employmentStatus" to "resigned",
+        "users/${user.uid}/approved" to false,
+        "users/${user.uid}/resignedAt" to resignedAt,
+        "users/${user.uid}/resignationMessage" to message,
+        "farms/${user.farmId}/members/${user.uid}" to null,
+        "farms/${user.farmId}/activityLogs/$logKey" to activityLog
+    )
+
+    database.updateChildren(updates)
+        .addOnSuccessListener {
+            onSuccess()
+        }
+        .addOnFailureListener { exception ->
+            onError(
+                exception.message
+                    ?: "Unable to leave the farm."
+            )
+        }
+}
+
+private fun accountAuthErrorMessage(
+    rawMessage: String?,
+    fallback: String
+): String {
+    val message = rawMessage.orEmpty()
+
+    return when {
+        message.contains(
+            "password is invalid",
+            ignoreCase = true
+        ) ||
+                message.contains(
+                    "invalid credential",
+                    ignoreCase = true
+                ) -> {
+            "Current password is incorrect."
+        }
+
+        message.contains(
+            "already in use",
+            ignoreCase = true
+        ) -> {
+            "That email address is already being used by another account."
+        }
+
+        message.contains(
+            "requires recent login",
+            ignoreCase = true
+        ) -> {
+            "Please log out, log back in, and try again."
+        }
+
+        message.contains(
+            "network",
+            ignoreCase = true
+        ) -> {
+            "Check your internet connection and try again."
+        }
+
+        message.isNotBlank() -> message
+
+        else -> fallback
     }
 }
 
@@ -7173,6 +10065,424 @@ fun ThresholdField(
 fun ProfileScreen(
     user: CrayFarmUser
 ) {
+    var fullName by remember(user.uid) {
+        mutableStateOf(user.fullName)
+    }
+
+    var age by remember(user.uid) {
+        mutableStateOf(user.age)
+    }
+
+    var address by remember(user.uid) {
+        mutableStateOf(user.address)
+    }
+
+    var contactNumber by remember(user.uid) {
+        mutableStateOf(user.contactNumber)
+    }
+
+    var birthday by remember(user.uid) {
+        mutableStateOf(user.birthday)
+    }
+
+    var farmName by remember(user.farmId) {
+        mutableStateOf(user.farmId)
+    }
+
+    var fieldToEdit by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    var fieldValue by remember {
+        mutableStateOf("")
+    }
+
+    var showFieldConfirmation by remember {
+        mutableStateOf(false)
+    }
+
+    var pendingField by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    var pendingValue by remember {
+        mutableStateOf("")
+    }
+
+    var pendingAge by remember {
+        mutableStateOf(0)
+    }
+
+    var isSaving by remember {
+        mutableStateOf(false)
+    }
+
+    var message by remember {
+        mutableStateOf("")
+    }
+
+    var messageIsSuccess by remember {
+        mutableStateOf(false)
+    }
+
+    val userRef = remember(user.uid) {
+        FirebaseDatabase.getInstance()
+            .getReference("users")
+            .child(user.uid)
+    }
+
+    val farmRef = remember(user.farmId) {
+        FirebaseDatabase.getInstance()
+            .getReference("farms")
+            .child(user.farmId)
+    }
+
+    DisposableEffect(userRef) {
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                fullName = snapshot.child("fullName")
+                    .getValue(String::class.java)
+                    .orEmpty()
+                    .ifBlank { fullName }
+
+                age = (snapshot.child("age").value as? Number)
+                    ?.toInt()
+                    ?: 0
+
+                address = snapshot.child("address")
+                    .getValue(String::class.java)
+                    .orEmpty()
+
+                contactNumber = snapshot.child("contactNumber")
+                    .getValue(String::class.java)
+                    .orEmpty()
+
+                birthday = snapshot.child("birthday")
+                    .getValue(String::class.java)
+                    .orEmpty()
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                messageIsSuccess = false
+                message = error.message
+            }
+        }
+
+        userRef.addValueEventListener(listener)
+
+        onDispose {
+            userRef.removeEventListener(listener)
+        }
+    }
+
+    DisposableEffect(farmRef) {
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                farmName = snapshot.child("farmName")
+                    .getValue(String::class.java)
+                    .orEmpty()
+                    .ifBlank {
+                        snapshot.child("name")
+                            .getValue(String::class.java)
+                            .orEmpty()
+                    }
+                    .ifBlank {
+                        user.farmId
+                    }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                farmName = user.farmId
+            }
+        }
+
+        farmRef.addValueEventListener(listener)
+
+        onDispose {
+            farmRef.removeEventListener(listener)
+        }
+    }
+
+    fieldToEdit?.let { field ->
+        AlertDialog(
+            onDismissRequest = {
+                if (!isSaving) {
+                    fieldToEdit = null
+                }
+            },
+            title = {
+                Text(
+                    text = when (field) {
+                        "fullName" -> "Change Name"
+                        "age" -> "Change Age"
+                        "birthday" -> "Change Birthday"
+                        "contactNumber" -> "Change Contact Number"
+                        "address" -> "Change Address"
+                        else -> "Edit Information"
+                    },
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                when (field) {
+                    "age" -> {
+                        OutlinedTextField(
+                            value = fieldValue,
+                            onValueChange = { value ->
+                                fieldValue = value
+                                    .filter { it.isDigit() }
+                                    .take(3)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Age")
+                            },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Number
+                            )
+                        )
+                    }
+
+                    "birthday" -> {
+                        OutlinedTextField(
+                            value = fieldValue,
+                            onValueChange = {
+                                fieldValue = it.take(10)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Birthday")
+                            },
+                            supportingText = {
+                                Text("Format: YYYY-MM-DD")
+                            },
+                            singleLine = true
+                        )
+                    }
+
+                    "contactNumber" -> {
+                        OutlinedTextField(
+                            value = fieldValue,
+                            onValueChange = { value ->
+                                fieldValue = value
+                                    .filter { character ->
+                                        character.isDigit() ||
+                                                character == '+' ||
+                                                character == '-' ||
+                                                character == ' '
+                                    }
+                                    .take(20)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Contact No.")
+                            },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Phone
+                            )
+                        )
+                    }
+
+                    "address" -> {
+                        OutlinedTextField(
+                            value = fieldValue,
+                            onValueChange = {
+                                fieldValue = it.take(180)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Address")
+                            },
+                            minLines = 2,
+                            maxLines = 4
+                        )
+                    }
+
+                    else -> {
+                        OutlinedTextField(
+                            value = fieldValue,
+                            onValueChange = {
+                                fieldValue = it.take(60)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text("Full name")
+                            },
+                            singleLine = true
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val cleanValue = fieldValue.trim()
+
+                        when (field) {
+                            "fullName" -> {
+                                if (cleanValue.length < 2) {
+                                    messageIsSuccess = false
+                                    message = "Enter a valid full name."
+                                    return@TextButton
+                                }
+
+                                pendingField = field
+                                pendingValue = cleanValue
+                            }
+
+                            "age" -> {
+                                val ageValue = cleanValue.toIntOrNull()
+
+                                if (ageValue == null || ageValue !in 1..120) {
+                                    messageIsSuccess = false
+                                    message = "Enter a valid age."
+                                    return@TextButton
+                                }
+
+                                pendingField = field
+                                pendingAge = ageValue
+                                pendingValue = cleanValue
+                            }
+
+                            "birthday" -> {
+                                if (!isValidBirthday(cleanValue)) {
+                                    messageIsSuccess = false
+                                    message = "Enter birthday as YYYY-MM-DD."
+                                    return@TextButton
+                                }
+
+                                pendingField = field
+                                pendingValue = cleanValue
+                            }
+
+                            "contactNumber" -> {
+                                if (cleanValue.length < 7) {
+                                    messageIsSuccess = false
+                                    message = "Enter a valid contact number."
+                                    return@TextButton
+                                }
+
+                                pendingField = field
+                                pendingValue = cleanValue
+                            }
+
+                            "address" -> {
+                                if (cleanValue.length < 3) {
+                                    messageIsSuccess = false
+                                    message = "Enter a valid address."
+                                    return@TextButton
+                                }
+
+                                pendingField = field
+                                pendingValue = cleanValue
+                            }
+                        }
+
+                        fieldToEdit = null
+                        showFieldConfirmation = true
+                    },
+                    enabled = !isSaving
+                ) {
+                    Text(
+                        text = "Continue",
+                        color = Blue,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        fieldToEdit = null
+                    },
+                    enabled = !isSaving
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showFieldConfirmation) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isSaving) {
+                    showFieldConfirmation = false
+                }
+            },
+            title = {
+                Text(
+                    text = "Confirm Change",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "Save this change to your worker profile?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val field = pendingField
+                            ?: return@TextButton
+
+                        isSaving = true
+                        message = ""
+
+                        val value: Any = if (field == "age") {
+                            pendingAge
+                        } else {
+                            pendingValue
+                        }
+
+                        userRef.child(field)
+                            .setValue(value)
+                            .addOnSuccessListener {
+                                isSaving = false
+                                showFieldConfirmation = false
+                                messageIsSuccess = true
+                                message = "Profile information updated."
+                            }
+                            .addOnFailureListener { exception ->
+                                isSaving = false
+                                showFieldConfirmation = false
+                                messageIsSuccess = false
+                                message = exception.message
+                                    ?: "Unable to update profile information."
+                            }
+                    },
+                    enabled = !isSaving
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "Save",
+                            color = Blue,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showFieldConfirmation = false
+                    },
+                    enabled = !isSaving
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = LightBlue
@@ -7182,51 +10492,266 @@ fun ProfileScreen(
         ) {
             PageHeader(title = "Profile")
 
-            Card(
+            LazyColumn(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(18.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = Color.White
-                ),
-                elevation = CardDefaults.cardElevation(
-                    defaultElevation = 2.dp
-                ),
-                shape = RoundedCornerShape(12.dp)
+                    .fillMaxSize()
+                    .padding(horizontal = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(18.dp)
-                ) {
+                item {
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color.White
+                        ),
+                        elevation = CardDefaults.cardElevation(
+                            defaultElevation = 2.dp
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(18.dp)
+                        ) {
+                            Text(
+                                text = fullName,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Text(
+                                text = user.email,
+                                fontSize = 14.sp,
+                                color = Color.Gray
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Text(
+                                text = "Worker",
+                                color = Blue,
+                                fontWeight = FontWeight.Medium
+                            )
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Text(
+                                text = "Farm: $farmName",
+                                color = Color.Gray
+                            )
+                        }
+                    }
+                }
+
+                item {
                     Text(
-                        text = user.fullName,
-                        fontSize = 20.sp,
+                        text = "Personal Information",
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Bold
                     )
+                }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        text = user.email,
-                        fontSize = 14.sp,
-                        color = Color.Gray
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        text = "Role: Worker",
-                        color = Blue,
-                        fontWeight = FontWeight.Medium
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        text = "Farm: ${user.farmId}",
-                        color = Color.Gray
+                item {
+                    WorkerEditableProfileField(
+                        label = "Name",
+                        value = fullName,
+                        onClick = {
+                            fieldValue = fullName
+                            message = ""
+                            fieldToEdit = "fullName"
+                        }
                     )
                 }
+
+                item {
+                    WorkerEditableProfileField(
+                        label = "Age",
+                        value = if (age > 0) {
+                            age.toString()
+                        } else {
+                            "Not provided"
+                        },
+                        onClick = {
+                            fieldValue =
+                                if (age > 0) age.toString() else ""
+                            message = ""
+                            fieldToEdit = "age"
+                        }
+                    )
+                }
+
+                item {
+                    WorkerEditableProfileField(
+                        label = "Birthday",
+                        value = birthday.ifBlank {
+                            "Not provided"
+                        },
+                        onClick = {
+                            fieldValue = birthday
+                            message = ""
+                            fieldToEdit = "birthday"
+                        }
+                    )
+                }
+
+                item {
+                    WorkerEditableProfileField(
+                        label = "Contact No.",
+                        value = contactNumber.ifBlank {
+                            "Not provided"
+                        },
+                        onClick = {
+                            fieldValue = contactNumber
+                            message = ""
+                            fieldToEdit = "contactNumber"
+                        }
+                    )
+                }
+
+                item {
+                    WorkerEditableProfileField(
+                        label = "Address",
+                        value = address.ifBlank {
+                            "Not provided"
+                        },
+                        onClick = {
+                            fieldValue = address
+                            message = ""
+                            fieldToEdit = "address"
+                        }
+                    )
+                }
+
+                if (message.isNotBlank()) {
+                    item {
+                        Text(
+                            text = message,
+                            modifier = Modifier.fillMaxWidth(),
+                            color = if (messageIsSuccess) {
+                                SafeGreen
+                            } else {
+                                Color(0xFFC62828)
+                            },
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                item {
+                    Spacer(modifier = Modifier.height(18.dp))
+                }
             }
+        }
+    }
+}
+
+@Composable
+fun WorkerEditableProfileField(
+    label: String,
+    value: String,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White
+        ),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = 2.dp
+        ),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = label,
+                    fontSize = 12.sp,
+                    color = Color.Gray,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Spacer(modifier = Modifier.height(3.dp))
+
+                Text(
+                    text = value,
+                    fontSize = 15.sp,
+                    color = Color(0xFF222222)
+                )
+            }
+
+            Text(
+                text = "›",
+                fontSize = 23.sp,
+                color = Color.Gray
+            )
+        }
+    }
+}
+
+@Composable
+fun WorkerProfileInformationCard(
+    age: Int,
+    birthday: String,
+    contactNumber: String,
+    address: String
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White
+        ),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = 2.dp
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            WorkerInfoRow(
+                label = "Age",
+                value = if (age > 0) {
+                    age.toString()
+                } else {
+                    "Not provided"
+                }
+            )
+
+            WorkerInfoRow(
+                label = "Birthday",
+                value = birthday.ifBlank {
+                    "Not provided"
+                }
+            )
+
+            WorkerInfoRow(
+                label = "Contact No.",
+                value = contactNumber.ifBlank {
+                    "Not provided"
+                }
+            )
+
+            WorkerInfoRow(
+                label = "Address",
+                value = address.ifBlank {
+                    "Not provided"
+                }
+            )
         }
     }
 }
@@ -7264,11 +10789,12 @@ private fun evaluateAndCreatePondAlerts(
     user: CrayFarmUser,
     pond: PondSummary,
     readings: PondReadings,
+    connections: SensorConnectionState,
     thresholds: PondThresholds
 ) {
     val candidates = mutableListOf<AlertCandidate>()
 
-    if (readings.temperature < thresholds.minTemperature) {
+    if (connections.temperature && readings.temperature < thresholds.minTemperature) {
         candidates.add(
             AlertCandidate(
                 type = "temperature_low",
@@ -7285,7 +10811,7 @@ private fun evaluateAndCreatePondAlerts(
         )
     }
 
-    if (readings.temperature > thresholds.maxTemperature) {
+    if (connections.temperature && readings.temperature > thresholds.maxTemperature) {
         candidates.add(
             AlertCandidate(
                 type = "temperature_high",
@@ -7302,7 +10828,7 @@ private fun evaluateAndCreatePondAlerts(
         )
     }
 
-    if (readings.ph < thresholds.minPh) {
+    if (connections.ph && readings.ph < thresholds.minPh) {
         candidates.add(
             AlertCandidate(
                 type = "ph_low",
@@ -7319,7 +10845,7 @@ private fun evaluateAndCreatePondAlerts(
         )
     }
 
-    if (readings.ph > thresholds.maxPh) {
+    if (connections.ph && readings.ph > thresholds.maxPh) {
         candidates.add(
             AlertCandidate(
                 type = "ph_high",
@@ -7336,7 +10862,7 @@ private fun evaluateAndCreatePondAlerts(
         )
     }
 
-    if (readings.turbidity > thresholds.maxTurbidity) {
+    if (connections.turbidity && readings.turbidity > thresholds.maxTurbidity) {
         candidates.add(
             AlertCandidate(
                 type = "turbidity_high",
@@ -7353,7 +10879,7 @@ private fun evaluateAndCreatePondAlerts(
         )
     }
 
-    if (readings.tds < thresholds.minTds) {
+    if (connections.tds && readings.tds < thresholds.minTds) {
         candidates.add(
             AlertCandidate(
                 type = "tds_low",
@@ -7370,7 +10896,7 @@ private fun evaluateAndCreatePondAlerts(
         )
     }
 
-    if (readings.tds > thresholds.maxTds) {
+    if (connections.tds && readings.tds > thresholds.maxTds) {
         candidates.add(
             AlertCandidate(
                 type = "tds_high",
@@ -7387,7 +10913,7 @@ private fun evaluateAndCreatePondAlerts(
         )
     }
 
-    if (readings.waterLevel < thresholds.minWaterLevel) {
+    if (connections.waterLevel && readings.waterLevel < thresholds.minWaterLevel) {
         candidates.add(
             AlertCandidate(
                 type = "water_level_low",
@@ -7545,6 +11071,18 @@ private fun formatAlertValue(value: Double): String {
     } else {
         String.format(Locale.getDefault(), "%.1f", value)
     }
+}
+
+private fun DataSnapshot.readNullableNumber(
+    key: String
+): Double? {
+    return (child(key).value as? Number)?.toDouble()
+}
+
+private fun DataSnapshot.readNullableBoolean(
+    key: String
+): Boolean? {
+    return child(key).getValue(Boolean::class.java)
 }
 
 private fun DataSnapshot.readNumber(key: String): Double {
@@ -7751,7 +11289,19 @@ private fun loadUserProfile(
                     ?: false,
                 active = snapshot.child("active")
                     .getValue(Boolean::class.java)
-                    ?: false
+                    ?: false,
+                age = (snapshot.child("age").value as? Number)
+                    ?.toInt()
+                    ?: 0,
+                address = snapshot.child("address")
+                    .getValue(String::class.java)
+                    .orEmpty(),
+                contactNumber = snapshot.child("contactNumber")
+                    .getValue(String::class.java)
+                    .orEmpty(),
+                birthday = snapshot.child("birthday")
+                    .getValue(String::class.java)
+                    .orEmpty()
             )
 
             when {

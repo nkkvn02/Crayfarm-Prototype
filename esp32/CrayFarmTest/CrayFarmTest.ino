@@ -9,10 +9,12 @@
  * - 0%   = clear-water reference
  * - 100% = cloudy-water reference
  *
- * Temporary dummy values:
+ * Sensors not yet connected:
  * - pH
  * - TDS
  * - Water level
+ *
+ * These unconnected sensors are NOT uploaded to Firebase.
  *
  * Upload behavior:
  * - Latest readings: every 5 seconds
@@ -37,10 +39,10 @@ const char *DEVICE_ID = "CRAY-ESP32-001";
 #include <DallasTemperature.h>
 #include <time.h>
 
-#define WIFI_SSID "wifi name"
-#define WIFI_PASSWORD "wifi pass"
+#define WIFI_SSID "WIFI NAME"
+#define WIFI_PASSWORD "WIFI PASS"
 
-#define API_KEY "REDACTED_GOOGLE_API_KEY"
+#define API_KEY "API KEY"
 #define USER_EMAIL "REDACTED"
 #define USER_PASSWORD "REDACTED"
 
@@ -58,6 +60,10 @@ const float TURBIDITY_CLOUDY_VOLTAGE = 0.715f;
 
 const int TURBIDITY_SAMPLE_COUNT = 50;
 const int TURBIDITY_SAMPLE_DELAY_MS = 10;
+
+// With a 100kΩ pull-down resistor from GPIO 34 to GND,
+// a disconnected turbidity signal reads close to 0 V.
+const float TURBIDITY_DISCONNECTED_VOLTAGE = 0.05f;
 
 UserAuth user_auth(
     API_KEY,
@@ -105,36 +111,32 @@ void connectWiFi();
 void maintainWiFi();
 void synchronizeClock();
 bool loadDeviceAssignment();
-bool readSensors(
+void readSensors(
     float &temperature,
-    float &ph,
+    bool &temperatureConnected,
     float &turbidity,
-    float &tds,
-    float &waterLevel
+    bool &turbidityConnected
 );
 float readRelativeTurbidityPercent();
 void uploadLatestReadings(
     float temperature,
-    float ph,
+    bool temperatureConnected,
     float turbidity,
-    float tds,
-    float waterLevel
+    bool turbidityConnected
 );
 void uploadHistoryRecord(
     float temperature,
-    float ph,
+    bool temperatureConnected,
     float turbidity,
-    float tds,
-    float waterLevel
+    bool turbidityConnected
 );
 uint64_t currentEpochMilliseconds();
 String uint64ToString(uint64_t value);
 String buildReadingJson(
     float temperature,
-    float ph,
+    bool temperatureConnected,
     float turbidity,
-    float tds,
-    float waterLevel,
+    bool turbidityConnected,
     uint64_t timestamp,
     const char *timestampField
 );
@@ -185,11 +187,6 @@ void setup()
     } else {
         Serial.println("Firebase authentication failed.");
     }
-
-    app.getApp<RealtimeDatabase>(Database);
-    Database.url(DATABASE_URL);
-
-    Serial.println("Firebase initialized.");
 
     app.getApp<RealtimeDatabase>(Database);
     Database.url(DATABASE_URL);
@@ -246,21 +243,18 @@ void loop()
         return;
     }
 
-    float temperature;
-    float ph;
-    float turbidity;
-    float tds;
-    float waterLevel;
+    float temperature = NAN;
+    bool temperatureConnected = false;
 
-    if (!readSensors(
-            temperature,
-            ph,
-            turbidity,
-            tds,
-            waterLevel))
-    {
-        return;
-    }
+    float turbidity = NAN;
+    bool turbidityConnected = false;
+
+    readSensors(
+        temperature,
+        temperatureConnected,
+        turbidity,
+        turbidityConnected
+    );
 
     if (latestDue)
     {
@@ -268,10 +262,9 @@ void loop()
 
         uploadLatestReadings(
             temperature,
-            ph,
+            temperatureConnected,
             turbidity,
-            tds,
-            waterLevel
+            turbidityConnected
         );
     }
 
@@ -281,10 +274,9 @@ void loop()
 
         uploadHistoryRecord(
             temperature,
-            ph,
+            temperatureConnected,
             turbidity,
-            tds,
-            waterLevel
+            turbidityConnected
         );
     }
 }
@@ -502,49 +494,132 @@ bool loadDeviceAssignment()
     return true;
 }
 
-bool readSensors(
+void readSensors(
     float &temperature,
-    float &ph,
+    bool &temperatureConnected,
     float &turbidity,
-    float &tds,
-    float &waterLevel
+    bool &turbidityConnected
 )
 {
+    // ---------------- Temperature ----------------
     sensors.requestTemperatures();
 
     temperature =
         sensors.getTempCByIndex(0);
 
-    if (
-        temperature ==
-        DEVICE_DISCONNECTED_C
-    )
+    temperatureConnected =
+        temperature != DEVICE_DISCONNECTED_C &&
+        !isnan(temperature);
+
+    if (!temperatureConnected)
     {
-        Serial.println(
-            "DS18B20 was not detected."
-        );
-        return false;
+        temperature = NAN;
+        Serial.println("Temperature sensor: DISCONNECTED");
+    }
+    else
+    {
+        Serial.print("Temperature: ");
+        Serial.print(temperature, 1);
+        Serial.println(" C");
     }
 
-    turbidity =
-        readRelativeTurbidityPercent();
+    // ---------------- Turbidity ----------------
+    uint32_t totalMillivolts = 0;
 
-    // Temporary dummy values.
-    ph = 7.2;
-    tds = 420.0;
-    waterLevel = 81.0;
+    for (
+        int sample = 0;
+        sample < TURBIDITY_SAMPLE_COUNT;
+        sample++
+    )
+    {
+        totalMillivolts +=
+            analogReadMilliVolts(
+                TURBIDITY_PIN
+            );
 
-    Serial.println();
-    Serial.println("Sensor readings");
-    Serial.print("Temperature: ");
-    Serial.print(temperature, 1);
-    Serial.println(" C");
+        delay(
+            TURBIDITY_SAMPLE_DELAY_MS
+        );
+    }
 
-    Serial.print("Relative turbidity: ");
-    Serial.print(turbidity, 1);
-    Serial.println(" %");
+    const float averageMillivolts =
+        totalMillivolts /
+        static_cast<float>(
+            TURBIDITY_SAMPLE_COUNT
+        );
 
-    return true;
+    const float adcVoltage =
+        averageMillivolts / 1000.0f;
+
+    turbidityConnected =
+        adcVoltage >
+        TURBIDITY_DISCONNECTED_VOLTAGE;
+
+    if (!turbidityConnected)
+    {
+        turbidity = NAN;
+
+        Serial.println(
+            "Turbidity sensor: DISCONNECTED"
+        );
+    }
+    else
+    {
+        float relativeTurbidity =
+            (
+                TURBIDITY_CLEAR_VOLTAGE -
+                adcVoltage
+            ) /
+            (
+                TURBIDITY_CLEAR_VOLTAGE -
+                TURBIDITY_CLOUDY_VOLTAGE
+            ) *
+            100.0f;
+
+        turbidity =
+            constrain(
+                relativeTurbidity,
+                0.0f,
+                100.0f
+            );
+
+        // For the current hardware behavior, an unplugged turbidity
+        // sensor is producing a calculated 0.0% reading. Treat that
+        // condition as disconnected so the Android dashboard shows
+        // "Sensor not connected".
+        if (turbidity <= 0.0f)
+        {
+            turbidityConnected = false;
+            turbidity = NAN;
+
+            Serial.println(
+                "Turbidity sensor: DISCONNECTED (0.0% detected)"
+            );
+            return;
+        }
+
+        Serial.print(
+            "Turbidity ADC voltage: "
+        );
+        Serial.print(
+            adcVoltage,
+            3
+        );
+        Serial.println(" V");
+
+        Serial.print(
+            "Relative turbidity: "
+        );
+        Serial.print(
+            turbidity,
+            1
+        );
+        Serial.println(" %");
+    }
+
+    Serial.println("pH: NOT CONNECTED");
+    Serial.println("TDS: NOT CONNECTED");
+    Serial.println("Water level: NOT CONNECTED");
 }
 
 float readRelativeTurbidityPercent()
@@ -607,10 +682,9 @@ float readRelativeTurbidityPercent()
 
 void uploadLatestReadings(
     float temperature,
-    float ph,
+    bool temperatureConnected,
     float turbidity,
-    float tds,
-    float waterLevel
+    bool turbidityConnected
 )
 {
     const uint64_t timestamp =
@@ -618,14 +692,15 @@ void uploadLatestReadings(
 
     const String json = buildReadingJson(
         temperature,
-        ph,
+        temperatureConnected,
         turbidity,
-        tds,
-        waterLevel,
+        turbidityConnected,
         timestamp,
         "updatedAt"
     );
 
+    // set() replaces the entire latest node, so any old
+    // dummy ph/tds/waterLevel fields are removed.
     const bool success =
         Database.set<object_t>(
             aClient,
@@ -652,10 +727,9 @@ void uploadLatestReadings(
 
 void uploadHistoryRecord(
     float temperature,
-    float ph,
+    bool temperatureConnected,
     float turbidity,
-    float tds,
-    float waterLevel
+    bool turbidityConnected
 )
 {
     const uint64_t recordedAt =
@@ -679,10 +753,9 @@ void uploadHistoryRecord(
 
     const String json = buildReadingJson(
         temperature,
-        ph,
+        temperatureConnected,
         turbidity,
-        tds,
-        waterLevel,
+        turbidityConnected,
         recordedAt,
         "recordedAt"
     );
@@ -742,39 +815,72 @@ String uint64ToString(uint64_t value)
 
 String buildReadingJson(
     float temperature,
-    float ph,
+    bool temperatureConnected,
     float turbidity,
-    float tds,
-    float waterLevel,
+    bool turbidityConnected,
     uint64_t timestamp,
     const char *timestampField
 )
 {
-    return
-        "{"
-        "\"temperature\":" +
-        String(temperature, 1) +
-        ","
-        "\"ph\":" +
-        String(ph, 1) +
-        ","
-        "\"turbidity\":" +
-        String(turbidity, 1) +
-        ","
-        "\"tds\":" +
-        String(tds, 0) +
-        ","
-        "\"waterLevel\":" +
-        String(waterLevel, 0) +
+    String json = "{";
+
+    json +=
+        "\"temperatureConnected\":" +
+        String(
+            temperatureConnected
+                ? "true"
+                : "false"
+        );
+
+    if (temperatureConnected)
+    {
+        json +=
+            ",\"temperature\":" +
+            String(
+                temperature,
+                1
+            );
+    }
+
+    json +=
+        ",\"turbidityConnected\":" +
+        String(
+            turbidityConnected
+                ? "true"
+                : "false"
+        );
+
+    if (turbidityConnected)
+    {
+        json +=
+            ",\"turbidity\":" +
+            String(
+                turbidity,
+                1
+            );
+    }
+
+    json +=
+        ",\"phConnected\":false"
+        ",\"tdsConnected\":false"
+        ",\"waterLevelConnected\":false";
+
+    json +=
         ",\"" +
         String(timestampField) +
         "\":" +
-        uint64ToString(timestamp) +
-        ","
-        "\"deviceId\":\"" +
+        uint64ToString(
+            timestamp
+        );
+
+    json +=
+        ",\"deviceId\":\"" +
         String(DEVICE_ID) +
-        "\""
-        "}";
+        "\"";
+
+    json += "}";
+
+    return json;
 }
 
 void printFirebaseError(
