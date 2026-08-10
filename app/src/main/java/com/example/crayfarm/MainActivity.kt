@@ -5,6 +5,9 @@ import android.os.Build
 import android.os.Bundle
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.graphics.pdf.PdfDocument
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 import android.util.Patterns
@@ -86,7 +89,7 @@ import java.util.Date
 import java.util.Locale
 
 private val Blue = Color(0xFF2839A8)
-private val LightBlue = Color(0xFFEAF4FF)
+private val LightBlue = Color(0xFFC5CDD9)
 private val SafeGreen = Color(0xFF16803B)
 private val WarningOrange = Color(0xFFE76F00)
 
@@ -156,7 +159,7 @@ enum class AnalyticsSensor(
     PH("pH", ""),
     TURBIDITY("Relative Turbidity", "%"),
     TDS("TDS", "ppm"),
-    WATER_LEVEL("Water Level", "%")
+    WATER_LEVEL("Water Level", "cm")
 }
 
 data class PondSummary(
@@ -173,7 +176,8 @@ data class PondThresholds(
     val maxTurbidity: Double = 25.0,
     val minTds: Double = 200.0,
     val maxTds: Double = 500.0,
-    val minWaterLevel: Double = 40.0
+    val minWaterLevel: Double = 15.0,
+    val maxWaterLevel: Double = 25.0
 )
 
 data class PondAlert(
@@ -2864,6 +2868,56 @@ fun PondDashboardContent(
 ) {
     val context = LocalContext.current
 
+    // "Clear" only hides old alerts/activities for this signed-in user
+    // on this device. Firebase history is preserved for reports/audit.
+    val dashboardPrefs = remember(user.uid) {
+        context.getSharedPreferences(
+            "crayfarm_dashboard_${user.uid}",
+            android.content.Context.MODE_PRIVATE
+        )
+    }
+
+    val alertsClearKey = remember(user.farmId, pond.pondId) {
+        "alertsClearedAt_${user.farmId}_${pond.pondId}"
+    }
+
+    val activitiesClearKey = remember(user.farmId) {
+        "activitiesClearedAt_${user.farmId}"
+    }
+
+    var alertsClearedAt by remember(
+        user.uid,
+        user.farmId,
+        pond.pondId
+    ) {
+        mutableStateOf(
+            dashboardPrefs.getLong(
+                alertsClearKey,
+                0L
+            )
+        )
+    }
+
+    var activitiesClearedAt by remember(
+        user.uid,
+        user.farmId
+    ) {
+        mutableStateOf(
+            dashboardPrefs.getLong(
+                activitiesClearKey,
+                0L
+            )
+        )
+    }
+
+    var showClearAlertsConfirmation by remember {
+        mutableStateOf(false)
+    }
+
+    var showClearActivitiesConfirmation by remember {
+        mutableStateOf(false)
+    }
+
     var readings by remember { mutableStateOf(PondReadings()) }
     var sensorConnections by remember {
         mutableStateOf(SensorConnectionState())
@@ -2939,7 +2993,7 @@ fun PondDashboardContent(
             .child(user.farmId)
             .child("activityLogs")
             .orderByChild("timestamp")
-            .limitToLast(20)
+            .limitToLast(100)
     }
 
     DisposableEffect(latestReadingsRef) {
@@ -3053,9 +3107,21 @@ fun PondDashboardContent(
                         "maxTds",
                         500.0
                     ),
-                    minWaterLevel = snapshot.readNumberOrDefault(
-                        "minWaterLevel",
-                        40.0
+                    minWaterLevel = if (
+                        snapshot.child("maxWaterLevel").exists()
+                    ) {
+                        snapshot.readNumberOrDefault(
+                            "minWaterLevel",
+                            15.0
+                        )
+                    } else {
+                        // Legacy versions stored only a percentage minimum.
+                        // Until the new cm thresholds are saved, use the new defaults.
+                        15.0
+                    },
+                    maxWaterLevel = snapshot.readNumberOrDefault(
+                        "maxWaterLevel",
+                        25.0
                     )
                 )
 
@@ -3074,7 +3140,7 @@ fun PondDashboardContent(
         }
     }
 
-    DisposableEffect(alertsQuery) {
+    DisposableEffect(alertsQuery, alertsClearedAt) {
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val loadedAlerts = snapshot.children.map { child ->
@@ -3113,9 +3179,13 @@ fun PondDashboardContent(
                             .getValue(String::class.java)
                             .orEmpty()
                     )
-                }.sortedByDescending { alert ->
-                    alert.createdAt
                 }
+                    .filter { alert ->
+                        alert.createdAt > alertsClearedAt
+                    }
+                    .sortedByDescending { alert ->
+                        alert.createdAt
+                    }
 
                 if (initialAlertsLoaded) {
                     loadedAlerts.forEach { alert ->
@@ -3161,7 +3231,7 @@ fun PondDashboardContent(
         }
     }
 
-    DisposableEffect(activityLogsQuery) {
+    DisposableEffect(activityLogsQuery, activitiesClearedAt) {
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val allActivities = snapshot.children.map { child ->
@@ -3195,12 +3265,19 @@ fun PondDashboardContent(
                 }
 
                 activities = if (user.role == "admin") {
-                    allActivities.sortedByDescending { it.timestamp }
+                    allActivities
+                        .filter { activity ->
+                            activity.timestamp > activitiesClearedAt
+                        }
+                        .sortedByDescending { it.timestamp }
                 } else {
                     allActivities
                         .filter { activity ->
-                            activity.actorUid == user.uid ||
-                                    activity.targetUid == user.uid
+                            (
+                                activity.actorUid == user.uid ||
+                                        activity.targetUid == user.uid
+                            ) &&
+                                    activity.timestamp > activitiesClearedAt
                         }
                         .sortedByDescending { it.timestamp }
                 }
@@ -3290,10 +3367,12 @@ fun PondDashboardContent(
     }
 
     val waterLevelStatus = if (sensorConnections.waterLevel) {
-        minimumStatus(
+        rangeStatus(
             value = readings.waterLevel,
             minimum = thresholds.minWaterLevel,
-            lowLabel = "Low"
+            maximum = thresholds.maxWaterLevel,
+            lowLabel = "Low",
+            highLabel = "High"
         )
     } else {
         disconnectedStatus
@@ -3317,6 +3396,67 @@ fun PondDashboardContent(
         !alert.acknowledged
     }
 
+    if (showClearAlertsConfirmation) {
+        AlertDialog(
+            onDismissRequest = {
+                showClearAlertsConfirmation = false
+            },
+            title = {
+                Text(
+                    text = "Clear alerts?",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "This clears the alert list for you on this device. Alert history is kept in Firebase and remains available in reports."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val clearedAt = System.currentTimeMillis()
+
+                        dashboardPrefs.edit()
+                            .putLong(
+                                alertsClearKey,
+                                clearedAt
+                            )
+                            .apply()
+
+                        alertsClearedAt = clearedAt
+                        alerts = emptyList()
+                        seenAlertIds.clear()
+
+                        val notificationManager =
+                            context.getSystemService(
+                                android.content.Context.NOTIFICATION_SERVICE
+                            ) as? android.app.NotificationManager
+
+                        notificationManager?.cancelAll()
+
+                        showClearAlertsConfirmation = false
+                    }
+                ) {
+                    Text(
+                        text = "Clear",
+                        color = Color(0xFFC62828),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showClearAlertsConfirmation = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     if (showAlertsPage) {
         PondAlertsScreen(
             user = user,
@@ -3325,6 +3465,9 @@ fun PondDashboardContent(
             errorMessage = alertsError,
             onBack = {
                 showAlertsPage = false
+            },
+            onClearAlerts = {
+                showClearAlertsConfirmation = true
             }
         )
 
@@ -3342,6 +3485,59 @@ fun PondDashboardContent(
             },
             onSaved = {
                 thresholdSensorToEdit = null
+            }
+        )
+    }
+
+
+    if (showClearActivitiesConfirmation) {
+        AlertDialog(
+            onDismissRequest = {
+                showClearActivitiesConfirmation = false
+            },
+            title = {
+                Text(
+                    text = "Clear recent activities?",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "This clears the Recent activities list for you on this device. The farm activity records remain stored in Firebase."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val clearedAt = System.currentTimeMillis()
+
+                        dashboardPrefs.edit()
+                            .putLong(
+                                activitiesClearKey,
+                                clearedAt
+                            )
+                            .apply()
+
+                        activitiesClearedAt = clearedAt
+                        activities = emptyList()
+                        showClearActivitiesConfirmation = false
+                    }
+                ) {
+                    Text(
+                        text = "Clear",
+                        color = Color(0xFFC62828),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showClearActivitiesConfirmation = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
             }
         )
     }
@@ -3464,12 +3660,35 @@ fun PondDashboardContent(
                     }
                 )
 
-                Text(
-                    text = "Recent activities",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFF1D1B20)
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Recent activities",
+                        modifier = Modifier.weight(1f),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF1D1B20)
+                    )
+
+                    if (activities.isNotEmpty()) {
+                        Text(
+                            text = "Clear",
+                            modifier = Modifier
+                                .clickable {
+                                    showClearActivitiesConfirmation = true
+                                }
+                                .padding(
+                                    horizontal = 4.dp,
+                                    vertical = 3.dp
+                                ),
+                            color = Color(0xFFC62828),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
 
                 when {
                     activityError.isNotBlank() -> {
@@ -3501,13 +3720,29 @@ fun PondDashboardContent(
                     }
 
                     else -> {
-                        activities.take(3).forEach { activity ->
-                            ActivityCard(
-                                title = activity.title,
-                                message = activity.message,
-                                time = formatActivityTime(activity.timestamp),
-                                color = activityColor(activity.type)
-                            )
+                        // Only this activity area scrolls.
+                        // The sensor/dashboard area above remains fixed.
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(172.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(
+                                items = activities,
+                                key = { activity ->
+                                    activity.id.ifBlank {
+                                        "${activity.timestamp}_${activity.type}_${activity.title}"
+                                    }
+                                }
+                            ) { activity ->
+                                ActivityCard(
+                                    title = activity.title,
+                                    message = activity.message,
+                                    time = formatActivityTime(activity.timestamp),
+                                    color = activityColor(activity.type)
+                                )
+                            }
                         }
                     }
                 }
@@ -3612,7 +3847,8 @@ fun PondAlertsScreen(
     pond: PondSummary,
     alerts: List<PondAlert>,
     errorMessage: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onClearAlerts: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -3653,7 +3889,9 @@ fun PondAlertsScreen(
 
                 Spacer(modifier = Modifier.width(4.dp))
 
-                Column {
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
                     Text(
                         text = "Alerts",
                         color = Color.White,
@@ -3665,6 +3903,23 @@ fun PondAlertsScreen(
                         text = pond.pondName,
                         color = Color(0xFFDDE3FF),
                         fontSize = 12.sp
+                    )
+                }
+
+                if (alerts.isNotEmpty()) {
+                    Text(
+                        text = "Clear",
+                        modifier = Modifier
+                            .clickable {
+                                onClearAlerts()
+                            }
+                            .padding(
+                                horizontal = 8.dp,
+                                vertical = 8.dp
+                            ),
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
@@ -4101,7 +4356,11 @@ fun WaterLevelCard(
                 ) {
                     Text(
                         text = if (connected) {
-                            "${waterLevel.toInt()}%"
+                            String.format(
+                                Locale.getDefault(),
+                                "%.1f cm",
+                                waterLevel
+                            )
                         } else {
                             "--"
                         },
@@ -4158,6 +4417,8 @@ fun SensorThresholdDialog(
                     currentThresholds.maxPh.formatThreshold()
                 AnalyticsSensor.TDS ->
                     currentThresholds.maxTds.formatThreshold()
+                AnalyticsSensor.WATER_LEVEL ->
+                    currentThresholds.maxWaterLevel.formatThreshold()
                 else -> ""
             }
         )
@@ -4225,8 +4486,15 @@ fun SensorThresholdDialog(
             }
 
             AnalyticsSensor.WATER_LEVEL -> {
+                val second = secondValue.toDoubleOrNull()
+                if (second == null) {
+                    errorMessage = "Enter a valid maximum water level."
+                    return null
+                }
+
                 currentThresholds.copy(
-                    minWaterLevel = first
+                    minWaterLevel = first,
+                    maxWaterLevel = second
                 )
             }
         }
@@ -4267,7 +4535,8 @@ fun SensorThresholdDialog(
 
             AnalyticsSensor.WATER_LEVEL ->
                 currentThresholds.copy(
-                    minWaterLevel = defaults.minWaterLevel
+                    minWaterLevel = defaults.minWaterLevel,
+                    maxWaterLevel = defaults.maxWaterLevel
                 )
         }
     }
@@ -4408,7 +4677,7 @@ fun SensorThresholdDialog(
                     AnalyticsSensor.WATER_LEVEL -> {
                         ThresholdField(
                             modifier = Modifier.fillMaxWidth(),
-                            label = "Minimum Water Level (%)",
+                            label = "Minimum Water Level (cm)",
                             value = firstValue,
                             onValueChanged = {
                                 firstValue = it
@@ -4416,8 +4685,18 @@ fun SensorThresholdDialog(
                             }
                         )
 
+                        ThresholdField(
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "Maximum Water Level (cm)",
+                            value = secondValue,
+                            onValueChanged = {
+                                secondValue = it
+                                errorMessage = ""
+                            }
+                        )
+
                         Text(
-                            text = "Default minimum: 40%",
+                            text = "Default safe range: 15 – 25 cm",
                             fontSize = 12.sp,
                             color = Color.Gray
                         )
@@ -5226,7 +5505,11 @@ fun PondReportsScreen(
         mutableStateOf("")
     }
 
-    val exportLauncher = rememberLauncherForActivityResult(
+    var pendingPdfBytes by remember {
+        mutableStateOf<ByteArray?>(null)
+    }
+
+    val csvExportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument(
             "text/csv"
         )
@@ -5253,6 +5536,48 @@ fun PondReportsScreen(
                 context,
                 exception.message
                     ?: "Unable to save the CSV report.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    val pdfExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument(
+            "application/pdf"
+        )
+    ) { uri ->
+        if (uri == null) {
+            return@rememberLauncherForActivityResult
+        }
+
+        val pdfBytes = pendingPdfBytes
+        if (pdfBytes == null) {
+            Toast.makeText(
+                context,
+                "Unable to prepare the PDF report.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return@rememberLauncherForActivityResult
+        }
+
+        try {
+            context.contentResolver
+                .openOutputStream(uri)
+                ?.use { output ->
+                    output.write(pdfBytes)
+                    output.flush()
+                }
+
+            Toast.makeText(
+                context,
+                "PDF report saved successfully.",
+                Toast.LENGTH_SHORT
+            ).show()
+        } catch (exception: Exception) {
+            Toast.makeText(
+                context,
+                exception.message
+                    ?: "Unable to save the PDF report.",
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -5531,67 +5856,123 @@ fun PondReportsScreen(
                         }
 
                         item {
-                            Button(
-                                onClick = {
-                                    if (
-                                        filteredHistory.isEmpty() &&
-                                        filteredAlerts.isEmpty()
-                                    ) {
-                                        Toast.makeText(
-                                            context,
-                                            "There is no report data to export.",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
+                            val dateText = SimpleDateFormat(
+                                "yyyy-MM-dd",
+                                Locale.getDefault()
+                            ).format(Date())
 
-                                        return@Button
+                            val safePondName =
+                                pond.pondName
+                                    .replace(
+                                        Regex("[^A-Za-z0-9_-]"),
+                                        "_"
+                                    )
+                                    .ifBlank {
+                                        "pond"
                                     }
 
-                                    pendingCsvContent =
-                                        buildPondReportCsv(
-                                            pond = pond,
-                                            selectedRange = selectedRange,
-                                            historyRecords = filteredHistory,
-                                            alerts = filteredAlerts
-                                        )
-
-                                    val dateText = SimpleDateFormat(
-                                        "yyyy-MM-dd",
-                                        Locale.getDefault()
-                                    ).format(Date())
-
-                                    val safePondName =
-                                        pond.pondName
-                                            .replace(
-                                                Regex("[^A-Za-z0-9_-]"),
-                                                "_"
-                                            )
-                                            .ifBlank {
-                                                "pond"
-                                            }
-
-                                    exportLauncher.launch(
-                                        "CrayFarm_${safePondName}_${selectedRange.name}_$dateText.csv"
-                                    )
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(50.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Blue,
-                                    contentColor = Color.White
-                                ),
-                                shape = RoundedCornerShape(10.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Text(
-                                    text = "Export Report as CSV",
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Button(
+                                    onClick = {
+                                        if (
+                                            filteredHistory.isEmpty() &&
+                                            filteredAlerts.isEmpty()
+                                        ) {
+                                            Toast.makeText(
+                                                context,
+                                                "There is no report data to export.",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+
+                                            return@Button
+                                        }
+
+                                        pendingCsvContent =
+                                            buildPondReportCsv(
+                                                pond = pond,
+                                                selectedRange = selectedRange,
+                                                historyRecords = filteredHistory,
+                                                alerts = filteredAlerts
+                                            )
+
+                                        csvExportLauncher.launch(
+                                            "CrayFarm_${safePondName}_${selectedRange.name}_$dateText.csv"
+                                        )
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(50.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Blue,
+                                        contentColor = Color.White
+                                    ),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text(
+                                        text = "Export CSV",
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+
+                                Button(
+                                    onClick = {
+                                        if (
+                                            filteredHistory.isEmpty() &&
+                                            filteredAlerts.isEmpty()
+                                        ) {
+                                            Toast.makeText(
+                                                context,
+                                                "There is no report data to export.",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+
+                                            return@Button
+                                        }
+
+                                        try {
+                                            pendingPdfBytes =
+                                                buildPondReportPdfBytes(
+                                                    pond = pond,
+                                                    selectedRange = selectedRange,
+                                                    historyRecords = filteredHistory,
+                                                    alerts = filteredAlerts
+                                                )
+
+                                            pdfExportLauncher.launch(
+                                                "CrayFarm_${safePondName}_${selectedRange.name}_$dateText.pdf"
+                                            )
+                                        } catch (exception: Exception) {
+                                            Toast.makeText(
+                                                context,
+                                                exception.message
+                                                    ?: "Unable to prepare the PDF report.",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(50.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Blue,
+                                        contentColor = Color.White
+                                    ),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text(
+                                        text = "Export PDF",
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                         }
 
                         item {
                             Text(
-                                text = "The CSV contains the report summary, all sensor-history records, and all alerts within the selected period.",
+                                text = "CSV and PDF exports contain the report summary, sensor history, and alerts within the selected period.",
                                 modifier = Modifier.fillMaxWidth(),
                                 color = Color.Gray,
                                 fontSize = 11.sp,
@@ -5713,7 +6094,7 @@ fun ReportSensorSummaryCard(
 
             ReportSensorSummaryRow(
                 label = "Water Level",
-                unit = "%",
+                unit = "cm",
                 values = records.map { record ->
                     record.waterLevel
                 }
@@ -5828,6 +6209,385 @@ fun ReportEmptyCard(
     }
 }
 
+private fun buildPondReportPdfBytes(
+    pond: PondSummary,
+    selectedRange: AnalyticsRange,
+    historyRecords: List<PondHistoryRecord>,
+    alerts: List<PondAlert>
+): ByteArray {
+    val document = PdfDocument()
+
+    val pageWidth = 595
+    val pageHeight = 842
+    val leftMargin = 42f
+    val rightMargin = 42f
+    val topMargin = 48f
+    val bottomMargin = 48f
+    val contentWidth = pageWidth - leftMargin - rightMargin
+
+    val bodyPaint = Paint().apply {
+        color = android.graphics.Color.rgb(35, 35, 35)
+        textSize = 9.5f
+        isAntiAlias = true
+        typeface = Typeface.create(
+            Typeface.DEFAULT,
+            Typeface.NORMAL
+        )
+    }
+
+    val headingPaint = Paint().apply {
+        color = android.graphics.Color.rgb(40, 57, 168)
+        textSize = 15f
+        isAntiAlias = true
+        typeface = Typeface.create(
+            Typeface.DEFAULT,
+            Typeface.BOLD
+        )
+    }
+
+    val sectionPaint = Paint().apply {
+        color = android.graphics.Color.rgb(25, 25, 25)
+        textSize = 11.5f
+        isAntiAlias = true
+        typeface = Typeface.create(
+            Typeface.DEFAULT,
+            Typeface.BOLD
+        )
+    }
+
+    var pageNumber = 0
+    var page: PdfDocument.Page? = null
+    var canvas: android.graphics.Canvas? = null
+    var y = topMargin
+
+    fun startPage() {
+        page?.let { currentPage ->
+            document.finishPage(currentPage)
+        }
+
+        pageNumber += 1
+
+        val pageInfo = PdfDocument.PageInfo.Builder(
+            pageWidth,
+            pageHeight,
+            pageNumber
+        ).create()
+
+        page = document.startPage(pageInfo)
+        canvas = page!!.canvas
+        y = topMargin
+    }
+
+    fun ensureSpace(requiredHeight: Float) {
+        if (
+            page == null ||
+            y + requiredHeight >
+            pageHeight - bottomMargin
+        ) {
+            startPage()
+        }
+    }
+
+    fun drawSingleLine(
+        value: String,
+        paint: Paint = bodyPaint,
+        extraAfter: Float = 0f
+    ) {
+        ensureSpace(paint.textSize + 8f)
+
+        canvas?.drawText(
+            value,
+            leftMargin,
+            y,
+            paint
+        )
+
+        y += paint.textSize + 5f + extraAfter
+    }
+
+    fun wrapText(
+        value: String,
+        paint: Paint,
+        maxWidth: Float = contentWidth
+    ): List<String> {
+        if (value.isBlank()) {
+            return listOf("")
+        }
+
+        val words = value
+            .replace("\n", " ")
+            .split(Regex("\\s+"))
+            .filter { word -> word.isNotBlank() }
+
+        if (words.isEmpty()) {
+            return listOf("")
+        }
+
+        val lines = mutableListOf<String>()
+        var current = ""
+
+        words.forEach { word ->
+            val candidate =
+                if (current.isBlank()) {
+                    word
+                } else {
+                    "$current $word"
+                }
+
+            if (
+                paint.measureText(candidate) <= maxWidth
+            ) {
+                current = candidate
+            } else {
+                if (current.isNotBlank()) {
+                    lines.add(current)
+                }
+
+                // A very long token is kept on one line rather than
+                // causing an endless wrap loop.
+                current = word
+            }
+        }
+
+        if (current.isNotBlank()) {
+            lines.add(current)
+        }
+
+        return lines
+    }
+
+    fun drawWrapped(
+        value: String,
+        paint: Paint = bodyPaint,
+        indent: Float = 0f,
+        extraAfter: Float = 0f
+    ) {
+        val maxWidth = contentWidth - indent
+        val lines = wrapText(
+            value = value,
+            paint = paint,
+            maxWidth = maxWidth
+        )
+
+        lines.forEach { line ->
+            ensureSpace(paint.textSize + 7f)
+
+            canvas?.drawText(
+                line,
+                leftMargin + indent,
+                y,
+                paint
+            )
+
+            y += paint.textSize + 4f
+        }
+
+        y += extraAfter
+    }
+
+    fun drawSection(title: String) {
+        y += 5f
+        drawSingleLine(
+            value = title,
+            paint = sectionPaint,
+            extraAfter = 2f
+        )
+    }
+
+    fun summaryLine(
+        label: String,
+        unit: String,
+        values: List<Double>
+    ): String {
+        if (values.isEmpty()) {
+            return "$label: No data"
+        }
+
+        val minValue = values.minOrNull() ?: 0.0
+        val avgValue = values.average()
+        val maxValue = values.maxOrNull() ?: 0.0
+
+        fun format(value: Double): String {
+            return if (unit.isBlank()) {
+                String.format(
+                    Locale.getDefault(),
+                    "%.2f",
+                    value
+                )
+            } else {
+                String.format(
+                    Locale.getDefault(),
+                    "%.2f %s",
+                    value,
+                    unit
+                )
+            }
+        }
+
+        return "$label — Min ${format(minValue)}, Avg ${format(avgValue)}, Max ${format(maxValue)}"
+    }
+
+    startPage()
+
+    drawSingleLine(
+        value = "CRAYFARM POND REPORT",
+        paint = headingPaint,
+        extraAfter = 5f
+    )
+
+    val generatedAt = SimpleDateFormat(
+        "yyyy-MM-dd HH:mm:ss",
+        Locale.getDefault()
+    ).format(Date())
+
+    drawWrapped("Pond: ${pond.pondName}")
+    drawWrapped("Report period: ${selectedRange.label}")
+    drawWrapped("Generated at: $generatedAt")
+    drawWrapped("History records: ${historyRecords.size}")
+    drawWrapped("Alerts: ${alerts.size}")
+    drawWrapped(
+        "Acknowledged alerts: ${alerts.count { alert -> alert.acknowledged }}",
+        extraAfter = 4f
+    )
+
+    drawSection("SENSOR SUMMARY")
+
+    drawWrapped(
+        summaryLine(
+            "Temperature",
+            "°C",
+            historyRecords.map { it.temperature }
+        )
+    )
+    drawWrapped(
+        summaryLine(
+            "pH",
+            "",
+            historyRecords.map { it.ph }
+        )
+    )
+    drawWrapped(
+        summaryLine(
+            "Relative Turbidity",
+            "%",
+            historyRecords.map { it.turbidity }
+        )
+    )
+    drawWrapped(
+        summaryLine(
+            "TDS",
+            "ppm",
+            historyRecords.map { it.tds }
+        )
+    )
+    drawWrapped(
+        summaryLine(
+            "Water Level",
+            "cm",
+            historyRecords.map { it.waterLevel }
+        )
+    )
+
+    drawSection("ALERT SUMMARY")
+
+    if (alerts.isEmpty()) {
+        drawWrapped("No alerts were recorded during this period.")
+    } else {
+        val alertGroups = alerts
+            .groupingBy { alert ->
+                alert.title.ifBlank {
+                    alert.type.replace("_", " ")
+                }
+            }
+            .eachCount()
+            .toList()
+            .sortedByDescending { it.second }
+
+        alertGroups.forEach { (title, count) ->
+            drawWrapped("• $title: $count")
+        }
+    }
+
+    val dateFormatter = SimpleDateFormat(
+        "yyyy-MM-dd HH:mm:ss",
+        Locale.getDefault()
+    )
+
+    drawSection("SENSOR HISTORY")
+
+    if (historyRecords.isEmpty()) {
+        drawWrapped("No sensor history is available for this period.")
+    } else {
+        historyRecords
+            .sortedBy { it.recordedAt }
+            .forEach { record ->
+                val line =
+                    "${dateFormatter.format(Date(record.recordedAt))} | " +
+                            "Temp ${String.format(Locale.getDefault(), "%.1f", record.temperature)}°C | " +
+                            "pH ${String.format(Locale.getDefault(), "%.2f", record.ph)} | " +
+                            "Turb ${String.format(Locale.getDefault(), "%.1f", record.turbidity)}% | " +
+                            "TDS ${String.format(Locale.getDefault(), "%.0f", record.tds)} ppm | " +
+                            "Water ${String.format(Locale.getDefault(), "%.1f", record.waterLevel)} cm"
+
+                drawWrapped(line)
+            }
+    }
+
+    drawSection("ALERT DETAILS")
+
+    if (alerts.isEmpty()) {
+        drawWrapped("No alert details are available for this period.")
+    } else {
+        alerts
+            .sortedBy { it.createdAt }
+            .forEach { alert ->
+                val status =
+                    if (alert.acknowledged) {
+                        "Acknowledged"
+                    } else {
+                        "Not acknowledged"
+                    }
+
+                drawWrapped(
+                    "${dateFormatter.format(Date(alert.createdAt))} — ${alert.title}",
+                    paint = sectionPaint
+                )
+
+                drawWrapped(
+                    "Value: ${formatAlertValue(alert.value)} ${alert.unit} | " +
+                            "Threshold: ${formatAlertValue(alert.threshold)} ${alert.unit} | " +
+                            "Status: $status",
+                    indent = 8f
+                )
+
+                if (alert.message.isNotBlank()) {
+                    drawWrapped(
+                        "Message: ${alert.message}",
+                        indent = 8f
+                    )
+                }
+
+                if (alert.suggestedAction.isNotBlank()) {
+                    drawWrapped(
+                        "Suggested action: ${alert.suggestedAction}",
+                        indent = 8f,
+                        extraAfter = 4f
+                    )
+                }
+            }
+    }
+
+    page?.let { currentPage ->
+        document.finishPage(currentPage)
+    }
+
+    val output = ByteArrayOutputStream()
+    document.writeTo(output)
+    document.close()
+
+    return output.toByteArray()
+}
+
 private fun buildPondReportCsv(
     pond: PondSummary,
     selectedRange: AnalyticsRange,
@@ -5905,7 +6665,7 @@ private fun buildPondReportCsv(
     appendSensorSummaryCsv(
         builder = builder,
         label = "Water Level",
-        unit = "%",
+        unit = "cm",
         values = historyRecords.map { record ->
             record.waterLevel
         }
@@ -5914,7 +6674,7 @@ private fun buildPondReportCsv(
     builder.appendLine()
     builder.appendLine("SENSOR HISTORY")
     builder.appendLine(
-        "Recorded At,Temperature C,pH,Relative Turbidity %,TDS ppm,Water Level %"
+        "Recorded At,Temperature C,pH,Relative Turbidity %,TDS ppm,Water Level cm"
     )
 
     val dateFormatter = SimpleDateFormat(
@@ -9940,7 +10700,9 @@ fun ThresholdSettingsCard(
     maxTds: String,
     onMaxTdsChanged: (String) -> Unit,
     minWaterLevel: String,
-    onMinWaterLevelChanged: (String) -> Unit
+    onMinWaterLevelChanged: (String) -> Unit,
+    maxWaterLevel: String,
+    onMaxWaterLevelChanged: (String) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -10017,12 +10779,23 @@ fun ThresholdSettingsCard(
                 )
             }
 
-            ThresholdField(
-                modifier = Modifier.fillMaxWidth(),
-                label = "Minimum Water Level (%)",
-                value = minWaterLevel,
-                onValueChanged = onMinWaterLevelChanged
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ThresholdField(
+                    modifier = Modifier.weight(1f),
+                    label = "Min Water (cm)",
+                    value = minWaterLevel,
+                    onValueChanged = onMinWaterLevelChanged
+                )
+
+                ThresholdField(
+                    modifier = Modifier.weight(1f),
+                    label = "Max Water (cm)",
+                    value = maxWaterLevel,
+                    onValueChanged = onMaxWaterLevelChanged
+                )
+            }
         }
     }
 }
@@ -10913,21 +11686,40 @@ private fun evaluateAndCreatePondAlerts(
         )
     }
 
-    if (connections.waterLevel && readings.waterLevel < thresholds.minWaterLevel) {
-        candidates.add(
-            AlertCandidate(
-                type = "water_level_low",
-                sensor = "waterLevel",
-                title = "Low Water Level",
-                message =
-                    "Water level reached ${formatAlertValue(readings.waterLevel)}%. The minimum safe value is ${formatAlertValue(thresholds.minWaterLevel)}%.",
-                suggestedAction =
-                    "Check for leaks, evaporation, blocked supply lines, and refill the pond safely.",
-                value = readings.waterLevel,
-                threshold = thresholds.minWaterLevel,
-                unit = "%"
+    if (connections.waterLevel) {
+        if (readings.waterLevel < thresholds.minWaterLevel) {
+            candidates.add(
+                AlertCandidate(
+                    type = "water_level_low",
+                    sensor = "waterLevel",
+                    title = "Low Water Level",
+                    message =
+                        "Water level reached ${formatAlertValue(readings.waterLevel)} cm. The minimum safe level is ${formatAlertValue(thresholds.minWaterLevel)} cm.",
+                    suggestedAction =
+                        "Check for leaks, evaporation, blocked supply lines, and refill the pond safely.",
+                    value = readings.waterLevel,
+                    threshold = thresholds.minWaterLevel,
+                    unit = "cm"
+                )
             )
-        )
+        }
+
+        if (readings.waterLevel > thresholds.maxWaterLevel) {
+            candidates.add(
+                AlertCandidate(
+                    type = "water_level_high",
+                    sensor = "waterLevel",
+                    title = "High Water Level",
+                    message =
+                        "Water level reached ${formatAlertValue(readings.waterLevel)} cm. The maximum safe level is ${formatAlertValue(thresholds.maxWaterLevel)} cm.",
+                    suggestedAction =
+                        "Check the water supply, drainage, overflow path, and reduce the pond level safely if needed.",
+                    value = readings.waterLevel,
+                    threshold = thresholds.maxWaterLevel,
+                    unit = "cm"
+                )
+            )
+        }
     }
 
     candidates.forEach { candidate ->
@@ -11163,8 +11955,13 @@ private fun validatePondThresholds(
             "Maximum turbidity cannot be negative."
         }
 
-        thresholds.minWaterLevel !in 0.0..100.0 -> {
-            "Minimum water level must be between 0 and 100."
+        thresholds.minWaterLevel < 0.0 ||
+                thresholds.maxWaterLevel < 0.0 -> {
+            "Water level thresholds cannot be negative."
+        }
+
+        thresholds.minWaterLevel >= thresholds.maxWaterLevel -> {
+            "Minimum water level must be lower than maximum water level."
         }
 
         thresholds.minPh < 0 || thresholds.maxPh > 14 -> {
@@ -11191,6 +11988,7 @@ private fun savePondThresholds(
         "minTds" to thresholds.minTds,
         "maxTds" to thresholds.maxTds,
         "minWaterLevel" to thresholds.minWaterLevel,
+        "maxWaterLevel" to thresholds.maxWaterLevel,
         "updatedAt" to System.currentTimeMillis(),
         "updatedBy" to user.uid
     )

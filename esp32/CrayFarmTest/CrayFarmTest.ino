@@ -4,6 +4,9 @@
  * Real sensors:
  * - DS18B20 temperature sensor on GPIO 4
  * - Analog turbidity sensor on GPIO 34
+ * - AJ-SR04M waterproof ultrasonic water-level sensor (depth in cm)
+ *      TRIG -> GPIO 26
+ *      ECHO -> GPIO 27 (through a 5V-to-3.3V voltage divider)
  *
  * Turbidity is uploaded as a calibrated relative percentage:
  * - 0%   = clear-water reference
@@ -12,9 +15,8 @@
  * Sensors not yet connected:
  * - pH
  * - TDS
- * - Water level
  *
- * These unconnected sensors are NOT uploaded to Firebase.
+ * pH and TDS are NOT uploaded to Firebase.
  *
  * Upload behavior:
  * - Latest readings: every 5 seconds
@@ -39,10 +41,10 @@ const char *DEVICE_ID = "CRAY-ESP32-001";
 #include <DallasTemperature.h>
 #include <time.h>
 
-#define WIFI_SSID "WIFI NAME"
-#define WIFI_PASSWORD "WIFI PASS"
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
 
-#define API_KEY "API KEY"
+#define API_KEY ""
 #define USER_EMAIL "REDACTED"
 #define USER_PASSWORD "REDACTED"
 
@@ -51,6 +53,21 @@ const char *DEVICE_ID = "CRAY-ESP32-001";
 
 #define ONE_WIRE_BUS 4
 #define TURBIDITY_PIN 34
+
+#define WATER_TRIG_PIN 26
+#define WATER_ECHO_PIN 27
+
+// IMPORTANT:
+// Measure from the AJ-SR04M sensor face straight down to the pond/container bottom.
+// Change this value to your real installation measurement.
+const float SENSOR_TO_BOTTOM_CM = 40.0f;
+
+// The Android app uses adjustable safe thresholds.
+// Default safe range there is 15 cm to 25 cm.
+// The ESP32 only measures and uploads the actual water depth in centimeters.
+
+// AJ-SR04M timeout. A timeout means no echo was received.
+const unsigned long WATER_ECHO_TIMEOUT_US = 35000UL;
 
 // Calibration references from the user's water tests.
 // Clear water ADC voltage: 1.810 V
@@ -115,20 +132,94 @@ void readSensors(
     float &temperature,
     bool &temperatureConnected,
     float &turbidity,
-    bool &turbidityConnected
+    bool &turbidityConnected,
+    float &waterLevel,
+    bool &waterLevelConnected
 );
 float readRelativeTurbidityPercent();
+bool readWaterLevelCm(
+    float &waterLevelCm,
+    float &distanceCm
+);
+
+bool readWaterLevelCm(
+    float &waterLevelCm,
+    float &distanceCm
+)
+{
+    // Send a 10-microsecond trigger pulse.
+    digitalWrite(WATER_TRIG_PIN, LOW);
+    delayMicroseconds(3);
+
+    digitalWrite(WATER_TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(WATER_TRIG_PIN, LOW);
+
+    const unsigned long duration =
+        pulseIn(
+            WATER_ECHO_PIN,
+            HIGH,
+            WATER_ECHO_TIMEOUT_US
+        );
+
+    // No echo = disconnected, wiring issue, or target not detected.
+    if (duration == 0)
+    {
+        distanceCm = NAN;
+        waterLevelCm = NAN;
+        return false;
+    }
+
+    distanceCm =
+        (duration * 0.0343f) / 2.0f;
+
+    if (
+        isnan(distanceCm) ||
+        distanceCm <= 0.0f ||
+        distanceCm > 600.0f
+    )
+    {
+        waterLevelCm = NAN;
+        return false;
+    }
+
+    // Actual water depth:
+    // sensor-to-bottom distance minus sensor-to-water-surface distance.
+    waterLevelCm =
+        SENSOR_TO_BOTTOM_CM -
+        distanceCm;
+
+    // If the measured surface is below the bottom reference,
+    // report 0 cm rather than a negative depth.
+    if (waterLevelCm < 0.0f)
+    {
+        waterLevelCm = 0.0f;
+    }
+
+    // A reading above the physical sensor-to-bottom distance is invalid.
+    if (waterLevelCm > SENSOR_TO_BOTTOM_CM)
+    {
+        waterLevelCm = SENSOR_TO_BOTTOM_CM;
+    }
+
+    return true;
+}
+
 void uploadLatestReadings(
     float temperature,
     bool temperatureConnected,
     float turbidity,
-    bool turbidityConnected
+    bool turbidityConnected,
+    float waterLevel,
+    bool waterLevelConnected
 );
 void uploadHistoryRecord(
     float temperature,
     bool temperatureConnected,
     float turbidity,
-    bool turbidityConnected
+    bool turbidityConnected,
+    float waterLevel,
+    bool waterLevelConnected
 );
 uint64_t currentEpochMilliseconds();
 String uint64ToString(uint64_t value);
@@ -137,6 +228,8 @@ String buildReadingJson(
     bool temperatureConnected,
     float turbidity,
     bool turbidityConnected,
+    float waterLevel,
+    bool waterLevelConnected,
     uint64_t timestamp,
     const char *timestampField
 );
@@ -157,6 +250,11 @@ void setup()
     sensors.begin();
 
     pinMode(TURBIDITY_PIN, INPUT);
+
+    pinMode(WATER_TRIG_PIN, OUTPUT);
+    digitalWrite(WATER_TRIG_PIN, LOW);
+    pinMode(WATER_ECHO_PIN, INPUT);
+
     analogReadResolution(12);
     analogSetPinAttenuation(
         TURBIDITY_PIN,
@@ -249,11 +347,16 @@ void loop()
     float turbidity = NAN;
     bool turbidityConnected = false;
 
+    float waterLevel = NAN;
+    bool waterLevelConnected = false;
+
     readSensors(
         temperature,
         temperatureConnected,
         turbidity,
-        turbidityConnected
+        turbidityConnected,
+        waterLevel,
+        waterLevelConnected
     );
 
     if (latestDue)
@@ -264,7 +367,9 @@ void loop()
             temperature,
             temperatureConnected,
             turbidity,
-            turbidityConnected
+            turbidityConnected,
+            waterLevel,
+            waterLevelConnected
         );
     }
 
@@ -276,7 +381,9 @@ void loop()
             temperature,
             temperatureConnected,
             turbidity,
-            turbidityConnected
+            turbidityConnected,
+            waterLevel,
+            waterLevelConnected
         );
     }
 }
@@ -498,7 +605,9 @@ void readSensors(
     float &temperature,
     bool &temperatureConnected,
     float &turbidity,
-    bool &turbidityConnected
+    bool &turbidityConnected,
+    float &waterLevel,
+    bool &waterLevelConnected
 )
 {
     // ---------------- Temperature ----------------
@@ -551,6 +660,8 @@ void readSensors(
     const float adcVoltage =
         averageMillivolts / 1000.0f;
 
+    // Disconnect detection is electrical only. A calculated 0% is valid
+    // clear-water turbidity and remains CONNECTED.
     turbidityConnected =
         adcVoltage >
         TURBIDITY_DISCONNECTED_VOLTAGE;
@@ -583,21 +694,6 @@ void readSensors(
                 100.0f
             );
 
-        // For the current hardware behavior, an unplugged turbidity
-        // sensor is producing a calculated 0.0% reading. Treat that
-        // condition as disconnected so the Android dashboard shows
-        // "Sensor not connected".
-        if (turbidity <= 0.0f)
-        {
-            turbidityConnected = false;
-            turbidity = NAN;
-
-            Serial.println(
-                "Turbidity sensor: DISCONNECTED (0.0% detected)"
-            );
-            return;
-        }
-
         Serial.print(
             "Turbidity ADC voltage: "
         );
@@ -617,9 +713,35 @@ void readSensors(
         Serial.println(" %");
     }
 
+    // ---------------- Water level (AJ-SR04M) ----------------
+    float waterDistanceCm = NAN;
+
+    waterLevelConnected =
+        readWaterLevelCm(
+            waterLevel,
+            waterDistanceCm
+        );
+
+    if (waterLevelConnected)
+    {
+        Serial.print("Water distance: ");
+        Serial.print(waterDistanceCm, 1);
+        Serial.println(" cm");
+
+        Serial.print("Water depth: ");
+        Serial.print(waterLevel, 1);
+        Serial.println(" cm");
+    }
+    else
+    {
+        waterLevel = NAN;
+        Serial.println(
+            "Water level sensor: DISCONNECTED / NO ECHO"
+        );
+    }
+
     Serial.println("pH: NOT CONNECTED");
     Serial.println("TDS: NOT CONNECTED");
-    Serial.println("Water level: NOT CONNECTED");
 }
 
 float readRelativeTurbidityPercent()
@@ -684,7 +806,9 @@ void uploadLatestReadings(
     float temperature,
     bool temperatureConnected,
     float turbidity,
-    bool turbidityConnected
+    bool turbidityConnected,
+    float waterLevel,
+    bool waterLevelConnected
 )
 {
     const uint64_t timestamp =
@@ -695,6 +819,8 @@ void uploadLatestReadings(
         temperatureConnected,
         turbidity,
         turbidityConnected,
+        waterLevel,
+        waterLevelConnected,
         timestamp,
         "updatedAt"
     );
@@ -729,7 +855,9 @@ void uploadHistoryRecord(
     float temperature,
     bool temperatureConnected,
     float turbidity,
-    bool turbidityConnected
+    bool turbidityConnected,
+    float waterLevel,
+    bool waterLevelConnected
 )
 {
     const uint64_t recordedAt =
@@ -756,6 +884,8 @@ void uploadHistoryRecord(
         temperatureConnected,
         turbidity,
         turbidityConnected,
+        waterLevel,
+        waterLevelConnected,
         recordedAt,
         "recordedAt"
     );
@@ -818,6 +948,8 @@ String buildReadingJson(
     bool temperatureConnected,
     float turbidity,
     bool turbidityConnected,
+    float waterLevel,
+    bool waterLevelConnected,
     uint64_t timestamp,
     const char *timestampField
 )
@@ -862,8 +994,25 @@ String buildReadingJson(
 
     json +=
         ",\"phConnected\":false"
-        ",\"tdsConnected\":false"
-        ",\"waterLevelConnected\":false";
+        ",\"tdsConnected\":false";
+
+    json +=
+        ",\"waterLevelConnected\":" +
+        String(
+            waterLevelConnected
+                ? "true"
+                : "false"
+        );
+
+    if (waterLevelConnected)
+    {
+        json +=
+            ",\"waterLevel\":" +
+            String(
+                waterLevel,
+                1
+            );
+    }
 
     json +=
         ",\"" +
