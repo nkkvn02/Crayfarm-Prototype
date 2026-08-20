@@ -2,10 +2,13 @@ package com.example.crayfarm.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Purple80 = Color(0xFFD0BCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
-
-val Purple40 = Color(0xFF6650a4)
-val PurpleGrey40 = Color(0xFF625b71)
-val Pink40 = Color(0xFF7D5260)
+val CrayFarmPrimary = Color(0xFF2639A6)
+val CrayFarmPrimaryDark = Color(0xFF142269)
+val CrayFarmSecondary = Color(0xFF4D64E8)
+val CrayFarmAccent = Color(0xFF4D64E8)
+val CrayFarmBackground = Color(0xFFC5CDD9)
+val CrayFarmSurface = Color(0xFFFFFFFF)
+val CrayFarmSurfaceVariant = Color(0xFFE9EDF7)
+val CrayFarmText = Color(0xFF17204A)
+val CrayFarmTextSecondary = Color(0xFF68708A)
+val CrayFarmError = Color(0xFFBA1A1A)

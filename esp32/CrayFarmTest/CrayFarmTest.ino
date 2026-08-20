@@ -29,6 +29,7 @@
  */
 
 const char *DEVICE_ID = "CRAY-ESP32-001";
+const char *FIRMWARE_VERSION = "1.0.0";
 
 #define ENABLE_DATABASE
 #define ENABLE_USER_AUTH
@@ -41,12 +42,16 @@ const char *DEVICE_ID = "CRAY-ESP32-001";
 #include <DallasTemperature.h>
 #include <time.h>
 
-#define WIFI_SSID ""
-#define WIFI_PASSWORD ""
+#if !__has_include("wifi_credentials.h")
+#error "Copy wifi_credentials.example.h to wifi_credentials.h and enter your Wi-Fi credentials."
+#endif
 
-#define API_KEY ""
-#define USER_EMAIL "REDACTED"
-#define USER_PASSWORD "REDACTED"
+#if !__has_include("firebase_credentials.h")
+#error "Copy firebase_credentials.example.h to firebase_credentials.h and enter the ESP32 Firebase account credentials."
+#endif
+
+#include "wifi_credentials.h"
+#include "firebase_credentials.h"
 
 #define DATABASE_URL \
     "https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app"
@@ -83,9 +88,9 @@ const int TURBIDITY_SAMPLE_DELAY_MS = 10;
 const float TURBIDITY_DISCONNECTED_VOLTAGE = 0.05f;
 
 UserAuth user_auth(
-    API_KEY,
-    USER_EMAIL,
-    USER_PASSWORD
+    CRAYFARM_FIREBASE_API_KEY,
+    CRAYFARM_FIREBASE_USER_EMAIL,
+    CRAYFARM_FIREBASE_USER_PASSWORD
 );
 
 FirebaseApp app;
@@ -231,7 +236,8 @@ String buildReadingJson(
     float waterLevel,
     bool waterLevelConnected,
     uint64_t timestamp,
-    const char *timestampField
+    const char *timestampField,
+    bool includeDeviceHealth
 );
 void printFirebaseError(const String &operation);
 
@@ -811,9 +817,6 @@ void uploadLatestReadings(
     bool waterLevelConnected
 )
 {
-    const uint64_t timestamp =
-        currentEpochMilliseconds();
-
     const String json = buildReadingJson(
         temperature,
         temperatureConnected,
@@ -821,8 +824,9 @@ void uploadLatestReadings(
         turbidityConnected,
         waterLevel,
         waterLevelConnected,
-        timestamp,
-        "updatedAt"
+        0,
+        "updatedAt",
+        true
     );
 
     // set() replaces the entire latest node, so any old
@@ -887,7 +891,8 @@ void uploadHistoryRecord(
         waterLevel,
         waterLevelConnected,
         recordedAt,
-        "recordedAt"
+        "recordedAt",
+        false
     );
 
     const bool success =
@@ -951,7 +956,8 @@ String buildReadingJson(
     float waterLevel,
     bool waterLevelConnected,
     uint64_t timestamp,
-    const char *timestampField
+    const char *timestampField,
+    bool includeDeviceHealth
 )
 {
     String json = "{";
@@ -1014,13 +1020,40 @@ String buildReadingJson(
             );
     }
 
-    json +=
-        ",\"" +
-        String(timestampField) +
-        "\":" +
-        uint64ToString(
-            timestamp
-        );
+    if (includeDeviceHealth)
+    {
+        // Firebase resolves these placeholders atomically when the latest
+        // reading is accepted, so freshness does not depend on ESP32 clock
+        // synchronization.
+        json +=
+            ",\"updatedAt\":{\".sv\":\"timestamp\"}"
+            ",\"lastSeen\":{\".sv\":\"timestamp\"}";
+
+        json +=
+            ",\"firmwareVersion\":\"" +
+            String(FIRMWARE_VERSION) +
+            "\"";
+
+        json +=
+            ",\"wifiRssi\":" +
+            String(WiFi.RSSI());
+
+        json +=
+            ",\"uptimeMs\":" +
+            uint64ToString(
+                static_cast<uint64_t>(millis())
+            );
+    }
+    else
+    {
+        json +=
+            ",\"" +
+            String(timestampField) +
+            "\":" +
+            uint64ToString(
+                timestamp
+            );
+    }
 
     json +=
         ",\"deviceId\":\"" +

@@ -12,6 +12,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
+/** Owns notification channels and local pond-alert notifications. */
 object CrayFarmNotificationHelper {
 
     private const val CHANNEL_ID = "crayfarm_pond_alerts"

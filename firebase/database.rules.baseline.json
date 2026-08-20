@@ -1,0 +1,40 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || (data.child('farmId').val() != null && data.child('farmId').val() !== '' && root.child('users').child(auth.uid).child('farmId').val() === data.child('farmId').val()))"
+      }
+    },
+    "employeeRequests": {
+      ".indexOn": ["workerUid", "farmId", "status"],
+      "$code": {
+        ".read": "auth != null && (data.child('workerUid').val() === auth.uid || (root.child('users').child(auth.uid).child('role').val() === 'admin' && root.child('users').child(auth.uid).child('farmId').val() === data.child('farmId').val()))"
+      }
+    },
+    "devices": {
+      "$deviceId": {
+        ".read": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || data.child('authUid').val() === auth.uid)"
+      }
+    },
+    "farms": {
+      "$farmId": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('farmId').val() === $farmId",
+        "activityLogs": {
+          ".indexOn": "timestamp"
+        },
+        "ponds": {
+          "$pondId": {
+            "history": {
+              ".indexOn": "recordedAt"
+            },
+            "alerts": {
+              ".indexOn": ["createdAt", "acknowledged"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,57 +1,57 @@
 package com.example.crayfarm.ui.theme
 
-import android.app.Activity
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
-
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
-)
+import androidx.compose.ui.graphics.Color
 
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
+    primary = CrayFarmPrimary,
     onPrimary = Color.White,
+    primaryContainer = Color(0xFFDDE2FF),
+    onPrimaryContainer = CrayFarmPrimaryDark,
+    secondary = CrayFarmSecondary,
     onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    secondaryContainer = Color(0xFFE1E6FF),
+    onSecondaryContainer = Color(0xFF18286F),
+    tertiary = CrayFarmAccent,
+    background = CrayFarmBackground,
+    onBackground = CrayFarmText,
+    surface = CrayFarmSurface,
+    onSurface = CrayFarmText,
+    surfaceVariant = CrayFarmSurfaceVariant,
+    onSurfaceVariant = CrayFarmTextSecondary,
+    error = CrayFarmError,
+    onError = Color.White,
+    outline = Color(0xFF78809A),
+    outlineVariant = Color(0xFFD4D8E5)
+)
+
+private val DarkColorScheme = darkColorScheme(
+    primary = Color(0xFFBBC3FF),
+    onPrimary = Color(0xFF00105C),
+    primaryContainer = Color(0xFF1E2E91),
+    onPrimaryContainer = Color(0xFFDDE2FF),
+    secondary = Color(0xFF74DBC4),
+    onSecondary = Color(0xFF00382F),
+    background = Color(0xFF10121A),
+    onBackground = Color(0xFFE5E7F1),
+    surface = Color(0xFF181A23),
+    onSurface = Color(0xFFE5E7F1),
+    surfaceVariant = Color(0xFF292C38),
+    onSurfaceVariant = Color(0xFFC6C9D7),
+    error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005)
 )
 
 @Composable
 fun CrayFarmTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme,
         typography = Typography,
         content = content
     )
