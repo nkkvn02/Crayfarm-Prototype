@@ -28,7 +28,7 @@
  * /farms/{farmId}/ponds/{pondId}/history/{epochMilliseconds}
  */
 
-const char *DEVICE_ID = "CRAY-ESP32-001";
+const char *DEVICE_ID = "CRAY-X7K9_Q2M8-V4R6_N1P3";
 const char *FIRMWARE_VERSION = "1.1.0";
 
 #define ENABLE_DATABASE

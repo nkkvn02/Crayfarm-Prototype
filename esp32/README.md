@@ -56,6 +56,25 @@ network has remained unavailable for two minutes.
 The build deliberately stops with a clear error if either local credential
 header is missing.
 
+## Device QR label
+
+Place a QR label and the human-readable Device ID on each prepared ESP32. The
+QR payload must use this exact format:
+
+```text
+CRAYFARM_DEVICE:CRAY-X7K9_Q2M8-V4R6_N1P3
+```
+
+Replace `CRAY-X7K9_Q2M8-V4R6_N1P3` with the value assigned to `DEVICE_ID` in
+`CrayFarmTest.ino`. The label contains only the device identity; never include
+Wi-Fi passwords, Firebase credentials, or other secrets. The Android app fills
+the Add Pond Device ID field after a valid scan, but the owner must still press
+**Link Device** before the existing Firebase transaction claims the device.
+
+Before linking, a system administrator must create the matching official record
+under `devices/{deviceId}` using the registry contract documented in
+`firebase/README.md`. A QR label identifies the device but does not register it.
+
 Each successful latest-reading upload now includes `lastSeen`,
 `firmwareVersion`, `wifiRssi`, and `uptimeMs` in the pond's existing `latest`
 node. `lastSeen` and the compatibility field `updatedAt` use Firebase server

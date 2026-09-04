@@ -1,0 +1,13 @@
+{
+  "devices": {
+    "CRAY-X7K9_Q2M8-V4R6_N1P3": {
+      "deviceId": "CRAY-X7K9_Q2M8-V4R6_N1P3",
+      "active": true,
+      "status": "available",
+      "farmId": "",
+      "pondId": "",
+      "authUid": "REPLACE_WITH_DEDICATED_ESP32_AUTH_UID",
+      "registeredAt": 0
+    }
+  }
+}

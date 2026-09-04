@@ -1,7 +1,10 @@
 package com.example.crayfarm
 
 import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Paint
@@ -67,6 +70,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -95,6 +99,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Opacity
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Thermostat
 import androidx.compose.material.icons.rounded.Water
 import com.google.firebase.auth.EmailAuthProvider
@@ -102,9 +107,10 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
-import com.google.firebase.database.MutableData
-import com.google.firebase.database.Transaction
 import com.google.firebase.database.ValueEventListener
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -243,7 +249,7 @@ fun PondSelectionScreen(
         )
     }
 
-    if (showAddPondDialog) {
+    if (showAddPondDialog && canAddPond(user.role)) {
         AddPondDialog(
             user = user,
             onDismiss = {
@@ -434,14 +440,16 @@ fun PondSelectionScreen(
                             )
                         }
 
-                        item {
-                            AddPondCard(
-                                onClick = {
-                                    successMessage = ""
-                                    errorMessage = ""
-                                    showAddPondDialog = true
-                                }
-                            )
+                        if (canAddPond(user.role)) {
+                            item {
+                                AddPondCard(
+                                    onClick = {
+                                        successMessage = ""
+                                        errorMessage = ""
+                                        showAddPondDialog = true
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -813,7 +821,7 @@ fun DeletePondDialog(
                     isDeleting = true
                     dialogError = ""
 
-                    deletePondAndUnlinkDevice(
+                    deletePondAndReleaseDevice(
                         user = user,
                         pond = pond,
                         onSuccess = {
@@ -894,55 +902,17 @@ private fun updatePondName(
         }
 }
 
-private fun deletePondAndUnlinkDevice(
-    user: CrayFarmUser,
-    pond: PondSummary,
-    onSuccess: () -> Unit,
-    onError: (String) -> Unit
-) {
-    if (user.farmId.isBlank()) {
-        onError("This account is not connected to a farm.")
-        return
-    }
-
-    val database = FirebaseDatabase.getInstance().reference
-
-    val updates = hashMapOf<String, Any?>(
-        "farms/${user.farmId}/ponds/${pond.pondId}" to null
-    )
-
-    if (pond.deviceId.isNotBlank()) {
-        updates["devices/${pond.deviceId}"] = null
-    }
-
-    database.updateChildren(updates)
-        .addOnSuccessListener {
-            addActivityLog(
-                farmId = user.farmId,
-                type = "pond_deleted",
-                title = "Pond deleted",
-                message =
-                    "${pond.pondName} was deleted and ${pond.deviceId.ifBlank { "its ESP32" }} was unlinked by ${user.fullName}.",
-                actorUid = user.uid,
-                actorName = user.fullName
-            )
-
-            onSuccess()
-        }
-        .addOnFailureListener { exception ->
-            onError(
-                exception.message
-                    ?: "Unable to delete the pond."
-            )
-        }
-}
-
 @Composable
 fun AddPondDialog(
     user: CrayFarmUser,
     onDismiss: () -> Unit,
     onPondCreated: (PondSummary) -> Unit
 ) {
+    val context = LocalContext.current
+    val activity = remember(context) {
+        context.findComponentActivity()
+    }
+
     var pondName by remember {
         mutableStateOf("")
     }
@@ -957,6 +927,48 @@ fun AddPondDialog(
 
     var isSaving by remember {
         mutableStateOf(false)
+    }
+
+    var showScanner by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    var cameraPermissionDenied by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    var cameraPermissionPermanentlyDenied by rememberSaveable {
+        mutableStateOf(false)
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            cameraPermissionDenied = false
+            cameraPermissionPermanentlyDenied = false
+            showScanner = true
+        } else {
+            cameraPermissionDenied = true
+            cameraPermissionPermanentlyDenied = activity != null &&
+                !ActivityCompat.shouldShowRequestPermissionRationale(
+                    activity,
+                    Manifest.permission.CAMERA
+                )
+        }
+    }
+
+    if (showScanner) {
+        DeviceQrScannerScreen(
+            onDeviceIdScanned = { scannedDeviceId ->
+                deviceId = scannedDeviceId
+                errorMessage = ""
+                showScanner = false
+            },
+            onDismiss = {
+                showScanner = false
+            }
+        )
     }
 
     AlertDialog(
@@ -997,14 +1009,7 @@ fun AddPondDialog(
                 OutlinedTextField(
                     value = deviceId,
                     onValueChange = { value ->
-                        deviceId = value
-                            .uppercase()
-                            .filter { character ->
-                                character.isLetterOrDigit() ||
-                                        character == '-' ||
-                                        character == '_'
-                            }
-                            .take(32)
+                        deviceId = normalizeDeviceIdInput(value)
 
                         errorMessage = ""
                     },
@@ -1015,6 +1020,91 @@ fun AddPondDialog(
                     },
                     singleLine = true
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Button(
+                    onClick = {
+                        val permissionGranted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+
+                        if (permissionGranted) {
+                            cameraPermissionDenied = false
+                            cameraPermissionPermanentlyDenied = false
+                            showScanner = true
+                        } else {
+                            cameraPermissionLauncher.launch(
+                                Manifest.permission.CAMERA
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isSaving,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Blue.copy(alpha = 0.10f),
+                        contentColor = Blue,
+                        disabledContainerColor = Color.LightGray.copy(alpha = 0.35f),
+                        disabledContentColor = Color.Gray
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.QrCodeScanner,
+                        contentDescription = null,
+                        modifier = Modifier.size(19.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Scan device QR",
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                if (cameraPermissionDenied) {
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFFFFF3E0),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp)
+                        ) {
+                            Text(
+                                text = if (cameraPermissionPermanentlyDenied) {
+                                    "Camera access is disabled. Enable it in app settings, or enter the Device ID manually."
+                                } else {
+                                    "Camera permission was not granted. You can try again or enter the Device ID manually."
+                                },
+                                color = Color(0xFF7A4D00),
+                                fontSize = 12.sp
+                            )
+
+                            if (cameraPermissionPermanentlyDenied) {
+                                TextButton(
+                                    onClick = {
+                                        context.startActivity(
+                                            Intent(
+                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                "package:${context.packageName}".toUri()
+                                            )
+                                        )
+                                    },
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Text(
+                                        text = "Open app settings",
+                                        color = Blue,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
 
                 if (errorMessage.isNotBlank()) {
                     Spacer(modifier = Modifier.height(10.dp))
@@ -1032,22 +1122,26 @@ fun AddPondDialog(
                 onClick = {
                     val cleanPondName = pondName.trim()
                     val cleanDeviceId = deviceId.trim()
+                    val deviceIdError = deviceIdValidationError(cleanDeviceId)
 
                     when {
                         cleanPondName.isBlank() -> {
                             errorMessage = "Enter a pond name."
                         }
 
-                        cleanDeviceId.length < 6 -> {
-                            errorMessage =
-                                "Enter a valid ESP32 device ID."
+                        cleanDeviceId.isBlank() -> {
+                            errorMessage = "Enter or scan a Device ID."
+                        }
+
+                        deviceIdError != null -> {
+                            errorMessage = deviceIdError
                         }
 
                         else -> {
                             isSaving = true
                             errorMessage = ""
 
-                            linkEsp32AndCreatePond(
+                            linkRegisteredDeviceAndCreatePond(
                                 user = user,
                                 pondName = cleanPondName,
                                 deviceId = cleanDeviceId,
@@ -1089,138 +1183,4 @@ fun AddPondDialog(
         }
     )
 }
-
-private fun linkEsp32AndCreatePond(
-    user: CrayFarmUser,
-    pondName: String,
-    deviceId: String,
-    onSuccess: (PondSummary) -> Unit,
-    onError: (String) -> Unit
-) {
-    if (user.farmId.isBlank()) {
-        onError("This account is not connected to a farm.")
-        return
-    }
-
-    val database = FirebaseDatabase.getInstance().reference
-    val pondId = database
-        .child("farms")
-        .child(user.farmId)
-        .child("ponds")
-        .push()
-        .key
-
-    if (pondId == null) {
-        onError("Unable to create a pond identifier.")
-        return
-    }
-
-    val normalizedDeviceId = deviceId.uppercase()
-    val deviceRef = database
-        .child("devices")
-        .child(normalizedDeviceId)
-
-    val linkedAt = System.currentTimeMillis()
-
-    deviceRef.runTransaction(
-        object : Transaction.Handler {
-            override fun doTransaction(
-                currentData: MutableData
-            ): Transaction.Result {
-                if (currentData.value != null) {
-                    return Transaction.abort()
-                }
-
-                currentData.value = mapOf(
-                    "deviceId" to normalizedDeviceId,
-                    "farmId" to user.farmId,
-                    "pondId" to pondId,
-                    "linkedAt" to linkedAt,
-                    "linkedBy" to user.uid
-                )
-
-                return Transaction.success(currentData)
-            }
-
-            override fun onComplete(
-                error: DatabaseError?,
-                committed: Boolean,
-                currentData: DataSnapshot?
-            ) {
-                when {
-                    error != null -> {
-                        onError(
-                            error.message.ifBlank {
-                                "Unable to check the ESP32 device."
-                            }
-                        )
-                    }
-
-                    !committed -> {
-                        val linkedFarmId = currentData
-                            ?.child("farmId")
-                            ?.getValue(String::class.java)
-                            .orEmpty()
-
-                        onError(
-                            if (
-                                linkedFarmId.isNotBlank() &&
-                                linkedFarmId != user.farmId
-                            ) {
-                                "This ESP32 is already linked to another farm."
-                            } else {
-                                "This ESP32 is already linked to a pond."
-                            }
-                        )
-                    }
-
-                    else -> {
-                        val pondData = mapOf(
-                            "pondName" to pondName,
-                            "deviceId" to normalizedDeviceId,
-                            "createdAt" to linkedAt,
-                            "createdBy" to user.uid,
-                            "active" to true
-                        )
-
-                        database
-                            .child("farms")
-                            .child(user.farmId)
-                            .child("ponds")
-                            .child(pondId)
-                            .setValue(pondData)
-                            .addOnSuccessListener {
-                                addActivityLog(
-                                    farmId = user.farmId,
-                                    type = "pond_added",
-                                    title = "Pond added",
-                                    message =
-                                        "$pondName was linked to $normalizedDeviceId by ${user.fullName}.",
-                                    actorUid = user.uid,
-                                    actorName = user.fullName
-                                )
-
-                                onSuccess(
-                                    PondSummary(
-                                        pondId = pondId,
-                                        pondName = pondName,
-                                        deviceId = normalizedDeviceId
-                                    )
-                                )
-                            }
-                            .addOnFailureListener { exception ->
-                                deviceRef.removeValue()
-
-                                onError(
-                                    exception.message
-                                        ?: "Unable to save the pond."
-                                )
-                            }
-                    }
-                }
-            }
-        }
-    )
-}
-
 

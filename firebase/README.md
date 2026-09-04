@@ -23,3 +23,28 @@ Before enabling production write rules:
    cross-farm access before deployment.
 
 Until then, keep the production database rules under explicit manual control.
+
+## Device registry contract
+
+Add Pond now consumes only device records that already exist under
+`devices/{deviceId}`. A registry record must contain the matching `deviceId`,
+`active: true`, `status: "available"`, blank `farmId` and `pondId` fields, and
+the dedicated ESP32 Firebase Authentication UID in `authUid`. See
+`device-registry.seed.example.json` for the current device example.
+
+Existing assigned device nodes created by an older app version must be migrated
+before using this validation. Preserve their current `farmId`, `pondId`, and
+`authUid`, then add the matching `deviceId`, `active: true`, and
+`status: "assigned"`. Do not replace an assigned record with the available seed
+example because that could make an in-use device claimable.
+
+When an owner links a pond, the Android transaction changes only the assignment
+fields and preserves registration metadata. Pond deletion restores
+`status: "available"` and blank assignment fields instead of deleting the
+device record. Unknown Device IDs are never created by the Android app.
+
+Production rules must reject device-record creation and deletion from mobile
+clients. They should allow only trusted owners to transition an existing active
+record from available to assigned, preferably through a callable backend using
+custom claims. Do not deploy the baseline file as a workaround; its writes are
+intentionally denied.

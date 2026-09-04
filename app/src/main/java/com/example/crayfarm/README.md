@@ -20,6 +20,7 @@
 - `viewmodel/` — feature UI state; Reports currently uses a tested ViewModel
   boundary and provides the pattern for future state migrations.
 - `notification/` — Android notification integration.
+- `util/` — shared Device ID normalization and CrayFarm QR payload parsing.
 
 All extracted files currently keep the `com.example.crayfarm` package so the
 refactor does not change public types, navigation behavior, or Firebase paths.
