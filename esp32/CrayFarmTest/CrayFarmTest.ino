@@ -29,7 +29,7 @@
  */
 
 const char *DEVICE_ID = "CRAY-ESP32-001";
-const char *FIRMWARE_VERSION = "1.0.0";
+const char *FIRMWARE_VERSION = "1.1.0";
 
 #define ENABLE_DATABASE
 #define ENABLE_USER_AUTH
@@ -37,20 +37,16 @@ const char *FIRMWARE_VERSION = "1.0.0";
 #include <WiFi.h>
 #include <FirebaseClient.h>
 #include "ExampleFunctions.h"
+#include "CrayFarmWiFiProvisioning.h"
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <time.h>
 
-#if !__has_include("wifi_credentials.h")
-#error "Copy wifi_credentials.example.h to wifi_credentials.h and enter your Wi-Fi credentials."
-#endif
-
 #if !__has_include("firebase_credentials.h")
 #error "Copy firebase_credentials.example.h to firebase_credentials.h and enter the ESP32 Firebase account credentials."
 #endif
 
-#include "wifi_credentials.h"
 #include "firebase_credentials.h"
 
 #define DATABASE_URL \
@@ -103,6 +99,7 @@ AsyncClient aClient(ssl_client);
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
+CrayFarmWiFiProvisioning wifiProvisioning;
 
 String linkedFarmId = "";
 String linkedPondId = "";
@@ -111,11 +108,11 @@ String historyPath = "";
 
 bool deviceLinked = false;
 bool clockReady = false;
+bool firebaseInitialized = false;
 
 unsigned long lastLatestUpload = 0;
 unsigned long lastHistoryUpload = 0;
 unsigned long lastLinkCheck = 0;
-unsigned long lastWiFiRetry = 0;
 
 const unsigned long LATEST_UPLOAD_INTERVAL =
     5000UL;
@@ -126,11 +123,7 @@ const unsigned long HISTORY_UPLOAD_INTERVAL =
 const unsigned long LINK_CHECK_INTERVAL =
     10000UL;
 
-const unsigned long WIFI_RETRY_INTERVAL =
-    10000UL;
-
-void connectWiFi();
-void maintainWiFi();
+void startFirebaseAfterWiFi();
 void synchronizeClock();
 bool loadDeviceAssignment();
 void readSensors(
@@ -267,48 +260,32 @@ void setup()
         ADC_11db
     );
 
-    connectWiFi();
-    synchronizeClock();
+    wifiProvisioning.begin(DEVICE_ID);
+    wifiProvisioning.connectOrProvision();
+    startFirebaseAfterWiFi();
 
-    Firebase.printf(
-        "Firebase Client v%s\n",
-        FIREBASE_CLIENT_VERSION
-    );
-
-    set_ssl_client_insecure_and_buffer(
-        ssl_client
-    );
-
-    initializeApp(
-    aClient,
-    app,
-    getAuth(user_auth),
-    120 * 1000
-    );
-
-    if (app.ready()) {
-    Serial.println("Firebase authentication successful.");
-    } else {
-        Serial.println("Firebase authentication failed.");
-    }
-
-    app.getApp<RealtimeDatabase>(Database);
-    Database.url(DATABASE_URL);
-
-    Serial.println("Firebase initialized.");
+    Serial.println("Hardware setup complete");
 }
 
 void loop()
 {
-    maintainWiFi();
-
-    app.loop();
-    Database.loop();
-
-    if (WiFi.status() != WL_CONNECTED)
+    if (!wifiProvisioning.maintain())
     {
         return;
     }
+
+    if (!firebaseInitialized)
+    {
+        startFirebaseAfterWiFi();
+    }
+
+    if (!firebaseInitialized)
+    {
+        return;
+    }
+
+    app.loop();
+    Database.loop();
 
     if (!clockReady)
     {
@@ -394,69 +371,45 @@ void loop()
     }
 }
 
-void connectWiFi()
+void startFirebaseAfterWiFi()
 {
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(
-        WIFI_SSID,
-        WIFI_PASSWORD
-    );
-
-    Serial.print("Connecting to Wi-Fi");
-
-    const unsigned long startedAt = millis();
-
-    while (
-        WiFi.status() != WL_CONNECTED &&
-        millis() - startedAt < 20000UL
-    )
-    {
-        Serial.print(".");
-        delay(300);
-    }
-
-    Serial.println();
-
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        Serial.print("Connected. IP: ");
-        Serial.println(WiFi.localIP());
-    }
-    else
-    {
-        Serial.println(
-            "Wi-Fi connection timed out."
-        );
-    }
-}
-
-void maintainWiFi()
-{
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        return;
-    }
-
-    const unsigned long now = millis();
-
     if (
-        now - lastWiFiRetry <
-        WIFI_RETRY_INTERVAL
+        firebaseInitialized ||
+        WiFi.status() != WL_CONNECTED
     )
     {
         return;
     }
 
-    lastWiFiRetry = now;
+    synchronizeClock();
 
     Serial.println(
-        "Wi-Fi disconnected. Reconnecting..."
+        "[Firebase] Starting authentication"
     );
 
-    WiFi.disconnect();
-    WiFi.begin(
-        WIFI_SSID,
-        WIFI_PASSWORD
+    Firebase.printf(
+        "Firebase Client v%s\n",
+        FIREBASE_CLIENT_VERSION
+    );
+
+    set_ssl_client_insecure_and_buffer(
+        ssl_client
+    );
+
+    initializeApp(
+        aClient,
+        app,
+        getAuth(user_auth),
+        120 * 1000
+    );
+
+    app.getApp<RealtimeDatabase>(Database);
+    Database.url(DATABASE_URL);
+
+    firebaseInitialized = true;
+
+    Serial.println(
+        "[Firebase] Initialization requested"
     );
 }
 
