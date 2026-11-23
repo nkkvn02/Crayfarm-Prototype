@@ -11,3 +11,4 @@ lib/
 .firebase/
 .pnpm-store/
 artifacts/
+.render-temp/
