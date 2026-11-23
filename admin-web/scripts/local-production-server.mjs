@@ -13,6 +13,7 @@ const {execute} = functionsRequire('./lib/workflow.js');
 const {readDeviceInfo, saveDeviceInfo} = functionsRequire('./lib/deviceInfo.js');
 const {listAssignmentPonds, updateDeviceAssignment} = functionsRequire('./lib/deviceAssignment.js');
 const {countOverviewInventory} = functionsRequire('./lib/overviewInventory.js');
+const {archivedResignations, isInactiveAccount, matchesDirectoryFilters} = functionsRequire('./lib/inactiveAccounts.js');
 const deploymentMode = process.env.CRAYFARM_DEPLOYMENT_MODE?.trim().toLowerCase();
 const hostedMode = deploymentMode === 'hostinger' || deploymentMode === 'render';
 const adminEmail = (process.env.CRAYFARM_ADMIN_EMAIL ?? process.env.CRAYFARM_LOCAL_ADMIN_EMAIL)?.trim().toLowerCase();
@@ -166,18 +167,28 @@ const handlers = {
   directory: async data => {
     const cursor = data.cursor ?? undefined;
     if (cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 2048)) throw Object.assign(new Error('Invalid cursor.'), {status:400});
+    const inactive = data.status === 'inactive';
+    const includeArchived = inactive && (!data.role || data.role === 'worker');
     if (data.search) {
       if (typeof data.search !== 'string' || data.search.length > 254 || !['uid','email'].includes(data.searchBy)) throw Object.assign(new Error('Invalid search.'), {status:400});
+      const users = [];
       try {
         const user = data.searchBy === 'email' ? await auth.getUserByEmail(data.search) : await auth.getUser(key(data.search));
-        const projected=await profile(user);return {users:await serviceIdentity(user,projected)?[]:[projected],cursor:null};
-      } catch (error) {if(error.code === 'auth/user-not-found') return {users:[],cursor:null}; throw error;}
+        const projected = await profile(user);
+        if ((!inactive || matchesDirectoryFilters(projected, data.role, data.status)) && !await serviceIdentity(user,projected)) {
+          users.push(projected);
+        }
+      } catch (error) { if (error.code !== 'auth/user-not-found') throw error; }
+      if (includeArchived) users.push(...await archivedResignations(db, auth, data.search, data.searchBy));
+      return {users, cursor:null};
     }
     if (data.role && !['admin','worker','unknown'].includes(data.role)) throw Object.assign(new Error('Invalid role.'), {status:400});
-    if (data.status && !['enabled','disabled'].includes(data.status)) throw Object.assign(new Error('Invalid status.'), {status:400});
+    if (data.status && !['enabled','disabled','inactive'].includes(data.status)) throw Object.assign(new Error('Invalid status.'), {status:400});
     const page = await auth.listUsers(25,cursor);
     const projected=await Promise.all(page.users.map(profile)),users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(Boolean);
-    return {users:users.filter(user => (!data.role || (data.role === 'unknown' ? !['admin','worker'].includes(user.role ?? '') : data.role==='worker' ? user.role==='worker'&&!['removed','resigned'].includes(user.employmentStatus??'') : user.role === data.role)) && (!data.status || user.disabled === (data.status === 'disabled'))),cursor:page.pageToken ?? null};
+    const matching = users.filter(user => matchesDirectoryFilters(user, data.role, data.status));
+    if (includeArchived && !cursor) matching.push(...await archivedResignations(db, auth));
+    return {users:matching, cursor:page.pageToken ?? null};
   },
   formerWorkers: async data => {
     const search=typeof data.search==='string'?data.search.trim().toLowerCase():'';if(search.length>254||!['uid','email'].includes(data.searchBy??'email'))throw Object.assign(new Error('Invalid search.'),{status:400});
@@ -190,7 +201,10 @@ const handlers = {
     if (cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 2048)) throw Object.assign(new Error('Invalid cursor.'), {status:400});
     const page = await auth.listUsers(100,cursor);
     const projected=await Promise.all(page.users.map(profile)),users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(Boolean);
-    return {total:users.length,owners:users.filter(user=>user.role==='admin').length,workers:users.filter(user=>user.role==='worker'&&!['removed','resigned'].includes(user.employmentStatus??'')).length,disabled:users.filter(user=>user.disabled).length,missingProfiles:users.filter(user=>!user.profileExists).length,cursor:page.pageToken ?? null};
+    const archived = cursor ? [] : await archivedResignations(db, auth);
+    return {total:users.length,owners:users.filter(user=>user.role==='admin').length,workers:users.filter(user=>user.role==='worker'&&!['removed','resigned'].includes(user.employmentStatus??'')).length,
+      disabled:users.filter(user=>user.disabled).length,inactive:users.filter(isInactiveAccount).length+archived.length,
+      missingProfiles:users.filter(user=>!user.profileExists).length,cursor:page.pageToken ?? null};
   },
   overviewInventory: () => countOverviewInventory(app),
   farmDirectory: async data => {

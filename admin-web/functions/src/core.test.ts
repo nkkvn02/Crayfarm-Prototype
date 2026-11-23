@@ -3,6 +3,24 @@ import assert from 'node:assert/strict';
 import {requireAdmin, key, action, deviceAction, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, sameOperation} from './core';
 import {execute, Effects} from './workflow';
 import {applyAssignment} from './deviceAssignment';
+import {isInactiveAccount, matchesDirectoryFilters} from './inactiveAccounts';
+
+test('inactive groups disabled and resigned accounts once while preserving their status', () => {
+  const account = (disabled: boolean, employmentStatus: string) =>
+    publicUser({uid:'worker', disabled, metadata:{}}, {role:'worker', employmentStatus});
+  const disabled = account(true, 'active');
+  const resigned = account(false, 'resigned');
+  const both = account(true, 'resigned');
+  const removed = account(false, 'removed');
+  const active = account(false, 'active');
+  assert.deepEqual([disabled, resigned, both, removed, active].filter(isInactiveAccount), [disabled, resigned, both]);
+  assert.equal(matchesDirectoryFilters(resigned, 'worker', 'inactive'), true);
+  assert.equal(matchesDirectoryFilters(resigned, 'admin', 'inactive'), false);
+  assert.equal(matchesDirectoryFilters(resigned, undefined, 'disabled'), false);
+  assert.equal(matchesDirectoryFilters(disabled, undefined, 'disabled'), true);
+  assert.equal(resigned.employmentStatus, 'resigned');
+  assert.equal(disabled.disabled, true);
+});
 
 test('device assignments preserve pond readings and record a single audit entry per request', () => {
   const source = {deviceId:'CRAY-1', active:true, latest:{temperature:25}};

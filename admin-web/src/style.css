@@ -34,7 +34,7 @@
 .metric:hover .metric-arrow,.metric:focus-visible .metric-arrow{background:var(--primary-soft)}
 .metric-owners .metric-icon{background:#e1e6ff;color:#18286f}
 .metric-workers .metric-icon{background:#e9edff;color:#4356c9}
-.metric-disabled .metric-icon{background:var(--danger-soft);color:var(--danger)}
+.metric-inactive .metric-icon{background:var(--danger-soft);color:var(--danger)}
 .metric-farms .metric-icon{background:#e1e6ff;color:#18286f}
 .metric-devices .metric-icon{background:#e9edff;color:#4356c9}
 @media(prefers-reduced-motion:reduce){.metric{transition:none}.metric:hover:not(:disabled){transform:none}}
