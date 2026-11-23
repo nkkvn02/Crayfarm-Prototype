@@ -6,8 +6,9 @@ import {action, deviceAction, key, nextDeviceRecord, publicDevice, publicFarm, p
 import {execute} from './workflow';
 import {readDeviceInfo, saveDeviceInfo} from './deviceInfo';
 import {listAssignmentPonds, updateDeviceAssignment} from './deviceAssignment';
+import {countOverviewInventory} from './overviewInventory';
 const usingEmulators=process.env.FUNCTIONS_EMULATOR==='true';
-initializeApp({databaseURL:usingEmulators?'https://demo-crayfarm-default-rtdb.firebaseio.com':'https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app'});
+const app = initializeApp({databaseURL:usingEmulators?'https://demo-crayfarm-default-rtdb.firebaseio.com':'https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app'});
 const auth = getAuth(), db = getDatabase();
 const control = db.ref('_crayfarmAdmin');
 function endpoint(fn: (data: any, actor: string) => Promise<any>) {
@@ -79,6 +80,10 @@ export const overview = endpoint(async data => {
   return {total:users.length, owners:users.filter(u=>u.role==='admin').length, workers:users.filter(u=>u.role==='worker'&&!['removed','resigned'].includes(u.employmentStatus??'')).length,
     disabled:users.filter(u=>u.disabled).length, missingProfiles:users.filter(u=>!u.profileExists).length, cursor:page.pageToken ?? null};
 });
+export const overviewInventory = endpoint(() => countOverviewInventory(
+  app, usingEmulators ? process.env.FIREBASE_DATABASE_EMULATOR_HOST ?? '127.0.0.1:9000' : undefined,
+));
+
 async function farmScalars(farmId: string) {
   const fields = ['farmName','description','ownerUid','createdAt'];
   const values = await Promise.all(fields.map(field => db.ref(`farms/${key(farmId)}/${field}`).get()));

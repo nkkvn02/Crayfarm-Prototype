@@ -12,6 +12,7 @@ const {action, deviceAction, key, nextDeviceRecord, publicDevice, publicFarm, pu
 const {execute} = functionsRequire('./lib/workflow.js');
 const {readDeviceInfo, saveDeviceInfo} = functionsRequire('./lib/deviceInfo.js');
 const {listAssignmentPonds, updateDeviceAssignment} = functionsRequire('./lib/deviceAssignment.js');
+const {countOverviewInventory} = functionsRequire('./lib/overviewInventory.js');
 const deploymentMode = process.env.CRAYFARM_DEPLOYMENT_MODE?.trim().toLowerCase();
 const hostedMode = deploymentMode === 'hostinger' || deploymentMode === 'render';
 const adminEmail = (process.env.CRAYFARM_ADMIN_EMAIL ?? process.env.CRAYFARM_LOCAL_ADMIN_EMAIL)?.trim().toLowerCase();
@@ -191,6 +192,7 @@ const handlers = {
     const projected=await Promise.all(page.users.map(profile)),users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(Boolean);
     return {total:users.length,owners:users.filter(user=>user.role==='admin').length,workers:users.filter(user=>user.role==='worker'&&!['removed','resigned'].includes(user.employmentStatus??'')).length,disabled:users.filter(user=>user.disabled).length,missingProfiles:users.filter(user=>!user.profileExists).length,cursor:page.pageToken ?? null};
   },
+  overviewInventory: () => countOverviewInventory(app),
   farmDirectory: async data => {
     let cursor=data.cursor??undefined;if(cursor!==undefined&&(typeof cursor!=='string'||cursor.length>2048))throw Object.assign(new Error('Invalid cursor.'),{status:400});
     const farms=[];let pages=0;
