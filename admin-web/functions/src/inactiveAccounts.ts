@@ -6,6 +6,21 @@ export function isInactiveAccount(account: {disabled?: boolean|null; role?: stri
   return account.disabled === true || (account.role === 'worker' && account.employmentStatus === 'resigned');
 }
 
+export function summarizeOverviewAccounts(users: Array<ReturnType<typeof publicUser>>, archivedResignationCount: number) {
+  const owners = users.filter(user => user.role === 'admin');
+  const workers = users.filter(user => user.role === 'worker' && !['removed','resigned'].includes(user.employmentStatus ?? ''));
+  return {
+    total: users.length,
+    owners: owners.length,
+    workers: workers.length,
+    activeOwners: owners.filter(user => !isInactiveAccount(user)).length,
+    activeWorkers: workers.filter(user => !isInactiveAccount(user)).length,
+    disabled: users.filter(user => user.disabled).length,
+    inactive: users.filter(isInactiveAccount).length + archivedResignationCount,
+    missingProfiles: users.filter(user => !user.profileExists).length,
+  };
+}
+
 export function matchesDirectoryFilters(user: ReturnType<typeof publicUser>, role?: string, status?: string) {
   const inactive = status === 'inactive';
   const matchesRole = !role || (role === 'unknown' ? !['admin','worker'].includes(user.role ?? '')

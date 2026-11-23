@@ -13,7 +13,7 @@ const {execute} = functionsRequire('./lib/workflow.js');
 const {readDeviceInfo, saveDeviceInfo} = functionsRequire('./lib/deviceInfo.js');
 const {listAssignmentPonds, updateDeviceAssignment} = functionsRequire('./lib/deviceAssignment.js');
 const {countOverviewInventory} = functionsRequire('./lib/overviewInventory.js');
-const {archivedResignations, isInactiveAccount, matchesDirectoryFilters} = functionsRequire('./lib/inactiveAccounts.js');
+const {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} = functionsRequire('./lib/inactiveAccounts.js');
 const deploymentMode = process.env.CRAYFARM_DEPLOYMENT_MODE?.trim().toLowerCase();
 const hostedMode = deploymentMode === 'hostinger' || deploymentMode === 'render';
 const adminEmail = (process.env.CRAYFARM_ADMIN_EMAIL ?? process.env.CRAYFARM_LOCAL_ADMIN_EMAIL)?.trim().toLowerCase();
@@ -202,9 +202,7 @@ const handlers = {
     const page = await auth.listUsers(100,cursor);
     const projected=await Promise.all(page.users.map(profile)),users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(Boolean);
     const archived = cursor ? [] : await archivedResignations(db, auth);
-    return {total:users.length,owners:users.filter(user=>user.role==='admin').length,workers:users.filter(user=>user.role==='worker'&&!['removed','resigned'].includes(user.employmentStatus??'')).length,
-      disabled:users.filter(user=>user.disabled).length,inactive:users.filter(isInactiveAccount).length+archived.length,
-      missingProfiles:users.filter(user=>!user.profileExists).length,cursor:page.pageToken ?? null};
+    return {...summarizeOverviewAccounts(users, archived.length), cursor:page.pageToken ?? null};
   },
   overviewInventory: () => countOverviewInventory(app),
   farmDirectory: async data => {

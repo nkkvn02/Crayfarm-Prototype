@@ -43,7 +43,7 @@
 .account-breakdown{
   --account-owners:var(--nav);
   --account-workers:var(--secondary);
-  --account-other:#9da5bf;
+  --account-inactive:var(--danger);
   margin-top:14px;
   padding:20px;
 }
@@ -90,7 +90,7 @@
 .account-breakdown-swatch{width:11px;height:11px;border-radius:3px}
 .account-breakdown-swatch.owners{background:var(--account-owners)}
 .account-breakdown-swatch.workers{background:var(--account-workers)}
-.account-breakdown-swatch.other{background:var(--account-other)}
+.account-breakdown-swatch.inactive{background:var(--account-inactive)}
 @media(max-width:520px){
   .account-breakdown{padding:16px}
   .account-breakdown-body{grid-template-columns:1fr;gap:12px}

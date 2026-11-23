@@ -3,7 +3,24 @@ import assert from 'node:assert/strict';
 import {requireAdmin, key, action, deviceAction, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, sameOperation} from './core';
 import {execute, Effects} from './workflow';
 import {applyAssignment} from './deviceAssignment';
-import {isInactiveAccount, matchesDirectoryFilters} from './inactiveAccounts';
+import {isInactiveAccount, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
+
+test('Overview chart separates active farm roles from inactive accounts', () => {
+  const account = (role: string|null, disabled = false, employmentStatus = 'active') =>
+    publicUser({uid:'account', disabled, metadata:{}}, {role, employmentStatus});
+  const accounts = [
+    account('admin'), account('admin', true),
+    account('worker'), account('worker', true),
+    account('worker', false, 'resigned'), account('worker', true, 'resigned'),
+    account('worker', false, 'removed'), account(null),
+  ];
+  const summary = summarizeOverviewAccounts(accounts, 1);
+  assert.deepEqual(
+    {total:summary.total, owners:summary.owners, workers:summary.workers,
+      activeOwners:summary.activeOwners, activeWorkers:summary.activeWorkers, inactive:summary.inactive},
+    {total:8, owners:2, workers:2, activeOwners:1, activeWorkers:1, inactive:5},
+  );
+});
 
 test('inactive groups disabled and resigned accounts once while preserving their status', () => {
   const account = (disabled: boolean, employmentStatus: string) =>

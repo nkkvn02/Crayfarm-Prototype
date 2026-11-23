@@ -44,7 +44,7 @@ type Person = {uid:string;email:string|null;name:string|null;role:string|null;di
 type Farm = {farmId:string;farmName:string|null;description:string|null;ownerUid:string|null;ownerName:string|null;ownerEmail:string|null;createdAt:number|null};
 type FarmDetail = {farm:Farm;owner:Person|null;members:Array<{uid:string;fullName:string|null;email:string|null;role:string|null;status:string|null;active:boolean|null;joinedAt:number|null;leftAt:number|null}>;ponds:Array<{pondId:string;pondName:string|null;deviceId:string|null;active:boolean|null;createdAt:number|null}>;devices:Array<{deviceId:string;active:boolean|null;status:string|null;farmId:string|null;pondId:string|null;linkedAt:number|null;registeredAt:number|null}>;truncated:{members:boolean;devices:boolean}};
 const date = (value:number|null) => value ? new Date(value).toLocaleString() : 'Unknown';
-type AccountCounts = {total:number; owners:number; workers:number; inactive:number; missingProfiles:number};
+type AccountCounts = {total:number; owners:number; workers:number; activeOwners:number; activeWorkers:number; inactive:number; missingProfiles:number};
 type InventoryCounts = {farms:number; devices:number};
 const isActiveWorker=(member:any)=>member.role==='worker'&&member.active!==false&&!['removed','resigned'].includes(member.status??'');
 const isFormerWorker=(member:any)=>member.role==='worker'&&!isActiveWorker(member);
@@ -68,24 +68,25 @@ const overviewCards = [
 ] as const;
 
 function AccountBreakdown({counts}: {counts: AccountCounts}) {
- const {total, owners, workers} = counts;
+ const {activeOwners, activeWorkers, inactive} = counts;
+ const total = activeOwners + activeWorkers + inactive;
  const breakdown = [
-  {key:'owners', label:'Farm owners', count:owners},
-  {key:'workers', label:'Farm workers', count:workers},
-  {key:'other', label:'Other accounts', count:total - owners - workers},
+  {key:'owners', label:'Active farm owners', count:activeOwners},
+  {key:'workers', label:'Active farm workers', count:activeWorkers},
+  {key:'inactive', label:'Inactive accounts', count:inactive},
  ];
- const ownerShare = total ? owners / total * 100 : 0;
- const workerEnd = total ? (owners + workers) / total * 100 : 0;
+ const ownerShare = total ? activeOwners / total * 100 : 0;
+ const workerEnd = total ? (activeOwners + activeWorkers) / total * 100 : 0;
  const background = total
-  ? `conic-gradient(var(--account-owners) 0 ${ownerShare}%, var(--account-workers) ${ownerShare}% ${workerEnd}%, var(--account-other) ${workerEnd}% 100%)`
+  ? `conic-gradient(var(--account-owners) 0% ${ownerShare}%, var(--account-workers) ${ownerShare}% ${workerEnd}%, var(--account-inactive) ${workerEnd}% 100%)`
   : undefined;
 
  return (
   <section className="panel account-breakdown" aria-labelledby="account-breakdown-title">
-   <h2 id="account-breakdown-title">Accounts by role</h2>
+   <h2 id="account-breakdown-title">Account breakdown</h2>
    <div className="account-breakdown-body">
-    <div className="account-breakdown-ring" style={{background}} role="img" aria-label={`${total.toLocaleString()} total accounts`}>
-     <div aria-hidden="true"><strong>{total.toLocaleString()}</strong><span>Total accounts</span></div>
+    <div className="account-breakdown-ring" style={{background}} role="img" aria-label={`${total.toLocaleString()} accounts shown`}>
+     <div aria-hidden="true"><strong>{total.toLocaleString()}</strong><span>Accounts shown</span></div>
     </div>
     <ul className="account-breakdown-legend">
      {breakdown.map(({key, label, count}) => (
@@ -187,7 +188,7 @@ function App(){
  }, [allowed]);
  useEffect(()=>{if(allowed&&tab==='Farms'&&!farmsLoaded)void run(()=>loadFarms());},[allowed,tab,farmsLoaded]);
  async function countAccounts() {
-  const totals: AccountCounts = {total:0, owners:0, workers:0, inactive:0, missingProfiles:0};
+  const totals: AccountCounts = {total:0, owners:0, workers:0, activeOwners:0, activeWorkers:0, inactive:0, missingProfiles:0};
   const keys = Object.keys(totals) as Array<keyof AccountCounts>;
   let cursor: string | undefined;
   let pages = 0;

@@ -7,7 +7,7 @@ import {execute} from './workflow';
 import {readDeviceInfo, saveDeviceInfo} from './deviceInfo';
 import {listAssignmentPonds, updateDeviceAssignment} from './deviceAssignment';
 import {countOverviewInventory} from './overviewInventory';
-import {archivedResignations, isInactiveAccount, matchesDirectoryFilters} from './inactiveAccounts';
+import {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
 const usingEmulators=process.env.FUNCTIONS_EMULATOR==='true';
 const app = initializeApp({databaseURL:usingEmulators?'https://demo-crayfarm-default-rtdb.firebaseio.com':'https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app'});
 const auth = getAuth(), db = getDatabase();
@@ -87,11 +87,9 @@ export const overview = endpoint(async data => {
   if(cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 2048)) throw new Error('invalid-argument');
   const page = await auth.listUsers(100, cursor);
   const projected=await Promise.all(page.users.map(profile));
-  const users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(Boolean) as any[];
+  const users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(user => user !== null);
   const archived = cursor ? [] : await archivedResignations(db, auth);
-  return {total:users.length, owners:users.filter(u=>u.role==='admin').length, workers:users.filter(u=>u.role==='worker'&&!['removed','resigned'].includes(u.employmentStatus??'')).length,
-    disabled:users.filter(u=>u.disabled).length, inactive:users.filter(isInactiveAccount).length + archived.length,
-    missingProfiles:users.filter(u=>!u.profileExists).length, cursor:page.pageToken ?? null};
+  return {...summarizeOverviewAccounts(users, archived.length), cursor:page.pageToken ?? null};
 });
 export const overviewInventory = endpoint(() => countOverviewInventory(
   app, usingEmulators ? process.env.FIREBASE_DATABASE_EMULATOR_HOST ?? '127.0.0.1:9000' : undefined,
