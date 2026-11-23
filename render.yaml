@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: crayfarm-admin-nikko
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: admin-web
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm run render:build
+    startCommand: pnpm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.0
+      - key: NODE_ENV
+        value: production
+      - key: CRAYFARM_DEPLOYMENT_MODE
+        value: render
+      - key: CRAYFARM_ADMIN_EMAIL
+        value: admincf@gmail.com
+      - key: CRAYFARM_PUBLIC_ORIGIN
+        value: https://crayfarm-admin-nikko.onrender.com
+      - key: FIREBASE_SERVICE_ACCOUNT_BASE64
+        sync: false

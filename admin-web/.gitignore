@@ -1,0 +1,13 @@
+node_modules/
+dist/
+lib/
+.env*
+!.env.example
+!.env.hostinger
+!.env.render
+*service-account*.json
+*firebase-adminsdk*.json
+*-debug.log
+.firebase/
+.pnpm-store/
+artifacts/

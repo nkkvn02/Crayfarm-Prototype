@@ -1,0 +1,16 @@
+import {applicationDefault,initializeApp} from 'firebase-admin/app';
+import {getAuth} from 'firebase-admin/auth';
+import {getDatabase} from 'firebase-admin/database';
+const [uid,email]=process.argv.slice(2);
+const projectId=process.env.CRAYFARM_FIREBASE_PROJECT_ID;
+if(projectId!=='crayfarm-eb2ea')throw Error('Set CRAYFARM_FIREBASE_PROJECT_ID=crayfarm-eb2ea after verifying the intended project.');
+if(!uid||!email)throw Error('Usage: node scripts/provision.mjs EXISTING_UID EXPECTED_EMAIL');
+initializeApp({credential:applicationDefault(),projectId,databaseURL:'https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app'});
+const auth=getAuth(),db=getDatabase();
+const user=await auth.getUser(uid);
+if(user.email!==email||user.disabled)throw Error('UID/email mismatch or disabled account.');
+if((await db.ref(`_crayfarmAdmin/blocks/${uid}`).get()).exists())throw Error('Account has a revocation block. Resolve through a reviewed recovery procedure before provisioning.');
+if((await db.ref(`_crayfarmAdmin/locks/${uid}`).get()).exists())throw Error('Unfinished account operation. Reconcile first.');
+await auth.setCustomUserClaims(uid,{...user.customClaims,crayfarmAdmin:true});
+console.log(`Provisioned ${uid} (${email}) in ${projectId}. Sign out and sign back in for a fresh token.`);
+process.exit(0);
