@@ -10,6 +10,8 @@ const {getAuth} = functionsRequire('firebase-admin/auth');
 const {getDatabase} = functionsRequire('firebase-admin/database');
 const {action, deviceAction, key, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, sameOperation} = functionsRequire('./lib/core.js');
 const {execute} = functionsRequire('./lib/workflow.js');
+const {readDeviceInfo, saveDeviceInfo} = functionsRequire('./lib/deviceInfo.js');
+const {listAssignmentPonds, updateDeviceAssignment} = functionsRequire('./lib/deviceAssignment.js');
 const deploymentMode = process.env.CRAYFARM_DEPLOYMENT_MODE?.trim().toLowerCase();
 const hostedMode = deploymentMode === 'hostinger' || deploymentMode === 'render';
 const adminEmail = (process.env.CRAYFARM_ADMIN_EMAIL ?? process.env.CRAYFARM_LOCAL_ADMIN_EMAIL)?.trim().toLowerCase();
@@ -200,6 +202,31 @@ const handlers = {
     if(data.status&&!['available','assigned','inactive'].includes(data.status))throw Object.assign(new Error('Invalid status.'),{status:400});
     if(data.search){if(typeof data.search!=='string')throw Object.assign(new Error('Invalid search.'),{status:400});const deviceId=key(data.search.toUpperCase());const snapshot=await db.ref(`devices/${deviceId}`).get();const device=snapshot.exists()?await deviceView(deviceId,snapshot.val()):null;return {devices:device&&(!data.status||device.status===data.status)?[device]:[],cursor:null};}
     let query=db.ref('devices').orderByKey();if(data.cursor)query=query.startAfter(key(data.cursor));const snapshot=await query.limitToFirst(26).get(),entries=[];snapshot.forEach(child=>entries.push({id:child.key,value:child.val()}));const page=entries.slice(0,25),devices=await Promise.all(page.map(entry=>deviceView(entry.id,entry.value)));return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor:entries.length>25?page.at(-1).id:null};
+  },
+  deviceInfo: async data => {
+    try { return await readDeviceInfo(db, data.deviceId); }
+    catch (error) { throw deviceFailure(error); }
+  },
+  assignmentPonds: async data => {
+    try { return await listAssignmentPonds(db, data.farmId, data.cursor); }
+    catch (error) { throw deviceFailure(error); }
+  },
+  changeDeviceAssignment: async (data, actor) => {
+    try { return await updateDeviceAssignment(db, data, actor); }
+    catch (error) {
+      if (error.message === 'conflict') throw Object.assign(new Error('This request was already used.'), {status:409});
+      if (error.message === 'failed-precondition') {
+        throw Object.assign(new Error('The device or pond changed. Refresh the device and check that the destination is active and available.'), {status:412});
+      }
+      if (error.message === 'assignment-database-too-large') {
+        throw Object.assign(new Error('The database exceeds the size limit for safe assignment.'), {status:412});
+      }
+      throw deviceFailure(error);
+    }
+  },
+  updateDeviceInfo: async (data, actor) => {
+    try { return await saveDeviceInfo(db, data.deviceId, data.displayName, data.maintenanceNotes, actor); }
+    catch (error) { throw deviceFailure(error); }
   },
   recentOperations: async () => {
     // Operation IDs are timestamp-prefixed, so this remains bounded without requiring a production rules index.

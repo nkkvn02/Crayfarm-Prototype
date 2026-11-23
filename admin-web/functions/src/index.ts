@@ -4,6 +4,8 @@ import {getDatabase} from 'firebase-admin/database';
 import {onCall, HttpsError} from 'firebase-functions/v2/https';
 import {action, deviceAction, key, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, requireAdmin, sameOperation} from './core';
 import {execute} from './workflow';
+import {readDeviceInfo, saveDeviceInfo} from './deviceInfo';
+import {listAssignmentPonds, updateDeviceAssignment} from './deviceAssignment';
 const usingEmulators=process.env.FUNCTIONS_EMULATOR==='true';
 initializeApp({databaseURL:usingEmulators?'https://demo-crayfarm-default-rtdb.firebaseio.com':'https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app'});
 const auth = getAuth(), db = getDatabase();
@@ -155,6 +157,21 @@ export const deviceDirectory = endpoint(async data => {
   const page=entries.slice(0,25),devices=await Promise.all(page.map(entry=>deviceView(entry.id,entry.value)));
   return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor:entries.length>25?page.at(-1)!.id:null};
 });
+export const deviceInfo = endpoint(data => readDeviceInfo(db, data.deviceId));
+export const assignmentPonds = endpoint(data => listAssignmentPonds(db, data.farmId, data.cursor));
+export const changeDeviceAssignment = endpoint(async (data, actor) => {
+  try { return await updateDeviceAssignment(db, data, actor); }
+  catch (error) {
+    if (error instanceof Error && error.message === 'conflict') throw new HttpsError('already-exists', 'This request was already used.');
+    if (error instanceof Error && error.message === 'assignment-database-too-large') {
+      throw new HttpsError('failed-precondition', 'The database exceeds the size limit for safe assignment.');
+    }
+    throw error;
+  }
+});
+export const updateDeviceInfo = endpoint((data, actor) =>
+  saveDeviceInfo(db, data.deviceId, data.displayName, data.maintenanceNotes, actor));
+
 export const recentOperations = endpoint(async () => {
   // Operation IDs are timestamp-prefixed, so this remains bounded without requiring a database-rules deployment.
   const snap = await control.child('operations').orderByKey().limitToLast(30).get();

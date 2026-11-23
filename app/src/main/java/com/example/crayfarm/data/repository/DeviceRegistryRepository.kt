@@ -115,9 +115,9 @@ internal fun deletePondAndReleaseDevice(
         return
     }
 
-    val updates = hashMapOf<String, Any?>(
-        "farms/${user.farmId}/ponds/${pond.pondId}" to null
-    )
+    val database = FirebaseDatabase.getInstance().reference
+    val pondPath = "farms/${user.farmId}/ponds/${pond.pondId}"
+    val updates = hashMapOf<String, Any?>(pondPath to null)
 
     if (pond.deviceId.isNotBlank()) {
         val devicePath = "devices/${pond.deviceId}"
@@ -128,22 +128,38 @@ internal fun deletePondAndReleaseDevice(
         updates["$devicePath/linkedBy"] = null
     }
 
-    FirebaseDatabase.getInstance().reference
-        .updateChildren(updates)
-        .addOnSuccessListener {
-            addActivityLog(
-                farmId = user.farmId,
-                type = "pond_deleted",
-                title = "Pond deleted",
-                message =
-                    "${pond.pondName} was deleted and ${pond.deviceId.ifBlank { "its ESP32" }} was released by ${user.fullName}.",
-                actorUid = user.uid,
-                actorName = user.fullName
-            )
-            onSuccess()
+    database.child(pondPath).get()
+        .addOnSuccessListener { current ->
+            val currentDeviceId = current.child("deviceId").getValue(String::class.java).orEmpty()
+            if (!current.exists() || currentDeviceId != pond.deviceId) {
+                onError("The pond or its device assignment changed. Close this dialog and reopen the pond before trying again.")
+                return@addOnSuccessListener
+            }
+
+            // Realtime Database rules recheck both sides as the update commits.
+            database.updateChildren(updates)
+                .addOnSuccessListener {
+                    val message = if (pond.deviceId.isBlank()) {
+                        "${pond.pondName} was deleted by ${user.fullName}."
+                    } else {
+                        "${pond.pondName} was deleted and ${pond.deviceId} was released by ${user.fullName}."
+                    }
+                    addActivityLog(
+                        farmId = user.farmId,
+                        type = "pond_deleted",
+                        title = "Pond deleted",
+                        message = message,
+                        actorUid = user.uid,
+                        actorName = user.fullName
+                    )
+                    onSuccess()
+                }
+                .addOnFailureListener {
+                    onError("The pond could not be deleted. Close this dialog and reopen the pond to check its assignment before trying again.")
+                }
         }
-        .addOnFailureListener { exception ->
-            onError(exception.message ?: "Unable to delete the pond.")
+        .addOnFailureListener {
+            onError("Could not verify the pond's current device assignment. Please try again.")
         }
 }
 

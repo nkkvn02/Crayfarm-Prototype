@@ -2,6 +2,43 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {requireAdmin, key, action, deviceAction, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, sameOperation} from './core';
 import {execute, Effects} from './workflow';
+import {applyAssignment} from './deviceAssignment';
+
+test('device assignments preserve pond readings and record a single audit entry per request', () => {
+  const source = {deviceId:'CRAY-1', active:true, latest:{temperature:25}};
+  const destination = {deviceId:'', active:true};
+  const device = {deviceId:'CRAY-1', authUid:'firmware', active:true, status:'assigned', farmId:'f1', pondId:'p1'};
+  const root = {devices:{'CRAY-1':device}, farms:{f1:{ponds:{p1:source}}, f2:{ponds:{p2:destination}}}};
+  const from = {farmId:'f1', pondId:'p1'}, to = {farmId:'f2', pondId:'p2'};
+  const request = {deviceId:'CRAY-1', operationId:'move-1', from, to};
+
+  const changed = applyAssignment(root, request, 'admin', 100);
+  applyAssignment(root, request, 'admin', 101);
+  assert.equal(source.deviceId, '');
+  assert.equal(source.latest.temperature, 25);
+  assert.equal(destination.deviceId, 'CRAY-1');
+  assert.equal(device.farmId, 'f2');
+  assert.equal(device.pondId, 'p2');
+  assert.equal(device.authUid, 'firmware');
+  assert.equal(changed._crayfarmAdmin.deviceAudit['move-1'].timestamp, 100);
+  assert.throws(() => applyAssignment(root, {...request, operationId:'stale'}, 'admin', 101), /failed-precondition/);
+  assert.throws(() => applyAssignment(root, request, 'different-admin', 101), /conflict/);
+
+  applyAssignment(root, {...request, operationId:'unlink-1', from:to, to:null}, 'admin', 102);
+  assert.equal(device.status, 'available');
+  assert.equal(destination.deviceId, '');
+  assert.throws(() => applyAssignment(root, {...request, operationId:'bad-pond', from:null,
+    to:{farmId:'f2', pondId:'missing'}}, 'admin', 103), /failed-precondition/);
+  destination.deviceId = 'CRAY-2';
+  assert.throws(() => applyAssignment(root, {...request, operationId:'occupied', from:null}, 'admin', 103),
+    /failed-precondition/);
+  assert.equal(destination.deviceId, 'CRAY-2');
+  assert.equal(device.status, 'available');
+  destination.deviceId = '';
+  applyAssignment(root, {...request, operationId:'assign-1', from:null}, 'admin', 104);
+  assert.equal(device.status, 'assigned');
+  assert.equal(destination.deviceId, 'CRAY-1');
+});
 test('only the boolean website claim authorizes; owner role and flags do not',()=>{
  for(const token of [{uid:'owner',role:'admin'},{uid:'worker'},{uid:'x',crayfarmAdmin:'true'},{uid:'x',crayfarmAdmin:false}]) assert.throws(()=>requireAdmin(token,false));
  assert.equal(requireAdmin({uid:'dev',crayfarmAdmin:true},false),'dev');

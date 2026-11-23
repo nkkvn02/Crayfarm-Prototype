@@ -1,0 +1,87 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      ".indexOn": [
+        "farmId",
+        "previousFarmId"
+      ],
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin' && ((query.orderByChild === 'farmId' && query.equalTo === root.child('users').child(auth.uid).child('farmId').val()) || (query.orderByChild === 'previousFarmId' && query.equalTo === root.child('users').child(auth.uid).child('farmId').val()))",
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || (root.child('users').child(auth.uid).child('role').val() === 'admin' && (data.child('farmId').val() === root.child('users').child(auth.uid).child('farmId').val() || data.child('previousFarmId').val() === root.child('users').child(auth.uid).child('farmId').val())))",
+        ".write": "auth != null && ((auth.uid === $uid && ((!data.exists() && (newData.child('role').val() === 'admin' || newData.child('role').val() === 'worker')) || (data.exists() && newData.child('role').val() === data.child('role').val() && newData.child('farmId').val() === data.child('farmId').val() && newData.child('approved').val() === data.child('approved').val() && newData.child('previousFarmId').val() === data.child('previousFarmId').val() && newData.child('employmentStatus').val() === data.child('employmentStatus').val()) || (data.exists() && data.child('role').val() === 'worker' && newData.child('role').val() === 'worker' && data.child('farmId').val() !== '' && newData.child('farmId').val() === '' && newData.child('previousFarmId').val() === data.child('farmId').val() && newData.child('approved').val() === false && newData.child('employmentStatus').val() === 'resigned'))) || (root.child('users').child(auth.uid).child('role').val() === 'admin' && newData.child('role').val() === 'worker' && (data.child('farmId').val() === root.child('users').child(auth.uid).child('farmId').val() || data.child('previousFarmId').val() === root.child('users').child(auth.uid).child('farmId').val() || newData.child('farmId').val() === root.child('users').child(auth.uid).child('farmId').val() || newData.child('previousFarmId').val() === root.child('users').child(auth.uid).child('farmId').val())))"
+      }
+    },
+    "employeeRequests": {
+      "$code": {
+        ".read": "auth != null && (data.child('workerUid').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        ".write": "auth != null && ((newData.child('workerUid').val() === auth.uid) || (data.child('workerUid').val() === auth.uid) || (root.child('users').child(auth.uid).child('role').val() === 'admin' && (newData.child('farmId').val() === root.child('users').child(auth.uid).child('farmId').val() || data.child('farmId').val() === root.child('users').child(auth.uid).child('farmId').val())))"
+      }
+    },
+    "deviceUsers": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+    "devices": {
+      "$deviceId": {
+        ".read": "auth != null && ((root.child('deviceUsers').child(auth.uid).child('deviceId').val() === $deviceId) || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin' && data.exists() && newData.exists() && newData.child('deviceId').val() === data.child('deviceId').val() && newData.child('active').val() === data.child('active').val() && newData.child('authUid').val() === data.child('authUid').val() && newData.child('registeredAt').val() === data.child('registeredAt').val() && ((data.child('status').val() === 'available' && (!data.child('farmId').exists() || data.child('farmId').val() === '') && (!data.child('pondId').exists() || data.child('pondId').val() === '') && newData.child('status').val() === 'assigned' && newData.child('farmId').val() === root.child('users').child(auth.uid).child('farmId').val() && newData.child('pondId').val() != null && newData.child('pondId').val() !== '' && newData.child('linkedBy').val() === auth.uid && newData.child('linkedAt').isNumber()) || (data.child('status').val() === 'assigned' && data.child('farmId').val() === root.child('users').child(auth.uid).child('farmId').val() && newData.child('status').val() === 'available' && (!newData.child('farmId').exists() || newData.child('farmId').val() === '') && (!newData.child('pondId').exists() || newData.child('pondId').val() === '') && !newData.child('linkedAt').exists() && !newData.child('linkedBy').exists() && data.child('pondId').isString() && data.child('pondId').val() !== '' && !newData.parent().parent().child('farms').child(data.child('farmId').val()).child('ponds').child(data.child('pondId').val()).exists()))"
+      }
+    },
+    "farms": {
+      "$farmId": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('farmId').val() === $farmId",
+        ".write": "auth != null && !data.exists() && newData.child('ownerUid').val() === auth.uid",
+        "activityLogs": {
+          ".indexOn": [
+            "timestamp"
+          ],
+          "$logId": {
+            ".write": "auth != null && root.child('users').child(auth.uid).child('farmId').val() === $farmId"
+          }
+        },
+        "ponds": {
+          "$pondId": {
+            "latest": {
+              ".write": "auth != null && root.child('deviceUsers').child(auth.uid).child('deviceId').exists() && root.child('devices').child(root.child('deviceUsers').child(auth.uid).child('deviceId').val()).child('farmId').val() === $farmId && root.child('devices').child(root.child('deviceUsers').child(auth.uid).child('deviceId').val()).child('pondId').val() === $pondId && root.child('farms').child($farmId).child('ponds').child($pondId).child('deviceId').val() === root.child('deviceUsers').child(auth.uid).child('deviceId').val()"
+            },
+            "history": {
+              "$recordId": {
+                ".write": "auth != null && root.child('deviceUsers').child(auth.uid).child('deviceId').exists() && root.child('devices').child(root.child('deviceUsers').child(auth.uid).child('deviceId').val()).child('farmId').val() === $farmId && root.child('devices').child(root.child('deviceUsers').child(auth.uid).child('deviceId').val()).child('pondId').val() === $pondId && root.child('farms').child($farmId).child('ponds').child($pondId).child('deviceId').val() === root.child('deviceUsers').child(auth.uid).child('deviceId').val()"
+              }
+            },
+            "thresholds": {
+              ".write": "auth != null && root.child('users').child(auth.uid).child('farmId').val() === $farmId"
+            },
+            "alerts": {
+              ".indexOn": [
+                "createdAt"
+              ],
+              "$alertId": {
+                ".write": "auth != null && root.child('users').child(auth.uid).child('farmId').val() === $farmId"
+              }
+            },
+            "alertCooldowns": {
+              "$alertType": {
+                ".write": "auth != null && root.child('users').child(auth.uid).child('farmId').val() === $farmId"
+              }
+            },
+            ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin' && root.child('users').child(auth.uid).child('farmId').val() === $farmId && ((newData.exists() && ((!data.exists() && ((!newData.child('deviceId').exists() || newData.child('deviceId').val() === '') || (newData.child('deviceId').isString() && root.child('devices').child(newData.child('deviceId').val()).child('status').val() === 'assigned' && root.child('devices').child(newData.child('deviceId').val()).child('farmId').val() === $farmId && root.child('devices').child(newData.child('deviceId').val()).child('pondId').val() === $pondId))) || (data.exists() && newData.child('deviceId').val() === data.child('deviceId').val()))) || (data.exists() && !newData.exists() && ((!data.child('deviceId').exists() || data.child('deviceId').val() === '') || (data.child('deviceId').isString() && root.child('devices').child(data.child('deviceId').val()).child('status').val() === 'assigned' && root.child('devices').child(data.child('deviceId').val()).child('farmId').val() === $farmId && root.child('devices').child(data.child('deviceId').val()).child('pondId').val() === $pondId && newData.parent().parent().parent().parent().child('devices').child(data.child('deviceId').val()).child('status').val() === 'available' && !newData.parent().parent().parent().parent().child('devices').child(data.child('deviceId').val()).child('linkedAt').exists() && !newData.parent().parent().parent().parent().child('devices').child(data.child('deviceId').val()).child('linkedBy').exists()))))"
+          }
+        },
+        "members": {
+          "$memberUid": {
+            ".write": "auth != null && auth.uid === $memberUid && root.child('users').child(auth.uid).child('role').val() === 'worker' && root.child('users').child(auth.uid).child('farmId').val() === $farmId && data.exists() && !newData.exists()"
+          },
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin' && root.child('users').child(auth.uid).child('farmId').val() === $farmId"
+        },
+        "$field": {
+          ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin' && root.child('users').child(auth.uid).child('farmId').val() === $farmId && $field !== 'ponds' && $field !== 'members' && $field !== 'activityLogs'"
+        }
+      }
+    }
+  }
+}

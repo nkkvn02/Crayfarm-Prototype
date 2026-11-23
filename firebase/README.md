@@ -48,3 +48,19 @@ clients. They should allow only trusted owners to transition an existing active
 record from available to assigned, preferably through a callable backend using
 custom claims. Do not deploy the baseline file as a workaround; its writes are
 intentionally denied.
+
+## Pond deletion and admin reassignment
+
+`database.rules.pond-deletion.candidate.json` is a release candidate based on
+the checked-in deployed rules snapshot. Compare it with the current
+production rules and review any drift before applying it. Apply and verify the
+pond-deletion guards before publishing the admin reassignment controls.
+
+A linked pond can be deleted only if its device is released in the same write.
+The candidate also checks that releasing a device leaves no pond at the location
+currently recorded in the registry. The Android client rechecks the link before
+submitting and asks the owner to reopen the pond if the deletion is refused.
+
+The local regression script `admin-web/scripts/test-pond-deletion-rules.mjs`
+uses only the dedicated loopback emulator on port 19048 and the
+`demo-crayfarm-pond-rules` namespace. Build the admin backend before running it.
