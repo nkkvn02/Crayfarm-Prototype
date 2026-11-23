@@ -67,6 +67,40 @@ const overviewCards = [
  {label:'Devices', key:'devices', icon:Cpu, section:'Devices'},
 ] as const;
 
+function AccountBreakdown({counts}: {counts: AccountCounts}) {
+ const {total, owners, workers} = counts;
+ const breakdown = [
+  {key:'owners', label:'Farm owners', count:owners},
+  {key:'workers', label:'Farm workers', count:workers},
+  {key:'other', label:'Other accounts', count:total - owners - workers},
+ ];
+ const ownerShare = total ? owners / total * 100 : 0;
+ const workerEnd = total ? (owners + workers) / total * 100 : 0;
+ const background = total
+  ? `conic-gradient(var(--account-owners) 0 ${ownerShare}%, var(--account-workers) ${ownerShare}% ${workerEnd}%, var(--account-other) ${workerEnd}% 100%)`
+  : undefined;
+
+ return (
+  <section className="panel account-breakdown" aria-labelledby="account-breakdown-title">
+   <h2 id="account-breakdown-title">Account breakdown</h2>
+   <div className="account-breakdown-body">
+    <div className="account-breakdown-ring" style={{background}} role="img" aria-label={`${total.toLocaleString()} total accounts`}>
+     <div aria-hidden="true"><strong>{total.toLocaleString()}</strong><span>Total accounts</span></div>
+    </div>
+    <ul className="account-breakdown-legend">
+     {breakdown.map(({key, label, count}) => (
+      <li key={key}>
+       <span className={`account-breakdown-swatch ${key}`} aria-hidden="true"/>
+       <span>{label}</span>
+       <b>{count.toLocaleString()}</b>
+      </li>
+     ))}
+    </ul>
+   </div>
+  </section>
+ );
+}
+
 function App(){
  const [user,setUser]=useState<User|null>(null),[ready,setReady]=useState(false),[allowed,setAllowed]=useState(false);
  const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -207,6 +241,7 @@ function App(){
     <ChevronRight className="metric-arrow" size={18} aria-hidden="true"/>
   </button>
  ))}</div>
+  {counts && <AccountBreakdown counts={counts}/>}
   {counts && counts.missingProfiles > 0 && (
     <div className="quick-row panel">
       <div className="quick-copy">
