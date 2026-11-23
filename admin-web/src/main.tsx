@@ -199,12 +199,12 @@ function App(){
  return <div className="shell"><aside><div className="brand"><span className="brand-mark"><Sprout size={20}/></span><span>CrayFarm</span></div><span className="console-label">ADMIN CONSOLE</span><nav aria-label="Primary navigation">{navItems.map(({label,icon:Icon})=><button className={tab===label?'nav active':'nav'} key={label} aria-current={tab===label?'page':undefined} onClick={()=>setTab(label)}><span className="nav-icon"><Icon size={18}/></span>{label}</button>)}</nav><div className="aside-bottom"><div className="admin-account"><span className="admin-avatar"><UserRound size={16}/></span><div><small>Administrator</small><p>{user.email}</p></div></div><button className="nav signout" onClick={()=>void signOut(auth)}><span className="nav-icon"><LogOut size={18}/></span>Sign out</button></div></aside><main className="workspace"><header><div><span className="breadcrumb">CrayFarm / {tab}</span><h1 ref={heading} tabIndex={-1}>{tab}</h1></div></header>{useEmulators&&<div className="banner"><Database size={18}/>Test environment</div>}{error&&<p role="alert" className="error"><AlertTriangle size={18}/>{error}</p>}{notice&&<p role="status" className="banner"><CheckCircle2 size={18}/>{notice}</p>}
  {tab==='Overview'&&<><div className="page-actions"><button className="secondary" disabled={busy} onClick={()=>void run(count)}><RefreshCw size={16} className={busy?'spin':''}/>{busy?'Refreshing…':'Refresh data'}</button></div><div className="cards">{overviewCards.map(card => (
   <button type="button" key={card.key} className={`metric metric-${card.key}`} onClick={() => openOverviewCard(card)}>
-    <span className="metric-top">
-      <span className="metric-icon"><card.icon size={20} aria-hidden="true"/></span>
-      <ChevronRight className="metric-arrow" size={18} aria-hidden="true"/>
+    <span className="metric-icon"><card.icon size={23} aria-hidden="true"/></span>
+    <span className="metric-content">
+      <span className="metric-label">{card.label}</span>
+      <strong>{overviewCounts[card.key]?.toLocaleString() ?? '—'}</strong>
     </span>
-    <span className="metric-label">{card.label}</span>
-    <strong>{overviewCounts[card.key] ?? '—'}</strong>
+    <ChevronRight className="metric-arrow" size={18} aria-hidden="true"/>
   </button>
  ))}</div>
   {counts && counts.missingProfiles > 0 && (
