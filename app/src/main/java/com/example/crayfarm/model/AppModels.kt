@@ -249,6 +249,7 @@ enum class EntryRole {
 
 enum class AuthPage {
     LOGIN,
+    FORGOT_PASSWORD,
     REGISTER,
     WAITING
 }

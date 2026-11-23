@@ -158,58 +158,66 @@ fun PondAnalyticsScreen(
                 }
 
                 item {
-                    Text(
-                        text = "Time range",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                item {
-                    Row(
+                    Card(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                        shape = RoundedCornerShape(16.dp)
                     ) {
-                        AnalyticsRange.entries.forEach { range ->
-                            AnalyticsChoiceButton(
-                                modifier = Modifier.weight(1f),
-                                label = range.label,
-                                selected = selectedRange == range,
-                                onClick = {
-                                    analyticsViewModel.selectRange(range)
-                                }
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Explore pond trends",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF17204A)
                             )
-                        }
-                    }
-                }
-
-                item {
-                    Text(
-                        text = "Sensor",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                item {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
-                        modifier = Modifier.height(116.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(
-                            items = AnalyticsSensor.entries,
-                            key = { sensor -> sensor.name }
-                        ) { sensor ->
-                            AnalyticsChoiceButton(
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "Choose a period and sensor to view its historical performance.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF68708A)
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("Time range", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                label = sensor.label,
-                                selected = selectedSensor == sensor,
-                                onClick = {
-                                    analyticsViewModel.selectSensor(sensor)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                AnalyticsRange.entries.forEach { range ->
+                                    AnalyticsChoiceButton(
+                                        modifier = Modifier.weight(1f),
+                                        label = range.label,
+                                        selected = selectedRange == range,
+                                        onClick = {
+                                            analyticsViewModel.selectRange(range)
+                                        }
+                                    )
                                 }
-                            )
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("Sensor", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                modifier = Modifier.height(116.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(
+                                    items = AnalyticsSensor.entries,
+                                    key = { sensor -> sensor.name }
+                                ) { sensor ->
+                                    AnalyticsChoiceButton(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        label = sensor.label,
+                                        selected = selectedSensor == sensor,
+                                        onClick = {
+                                            analyticsViewModel.selectSensor(sensor)
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -311,6 +319,11 @@ fun AnalyticsChoiceButton(
     Surface(
         modifier = modifier
             .height(42.dp)
+            .border(
+                width = 1.dp,
+                color = if (selected) Blue else Color(0xFFC8D0E0),
+                shape = RoundedCornerShape(10.dp)
+            )
             .clickable {
                 onClick()
             },
@@ -357,30 +370,31 @@ fun AnalyticsSummaryCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = Color.White
+            containerColor = Color(0xFF17266F)
         ),
         elevation = CardDefaults.cardElevation(
             defaultElevation = 2.dp
         ),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(18.dp)
     ) {
         Column(
             modifier = Modifier.padding(16.dp)
         ) {
             Text(
-                text = sensor.label,
+                text = "${sensor.label} overview",
                 fontSize = 17.sp,
                 fontWeight = FontWeight.Bold,
-                color = Blue
+                color = Color.White
             )
 
             Spacer(modifier = Modifier.height(12.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 AnalyticsMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Minimum",
                     value = formatAnalyticsValue(
                         value = minimum,
@@ -389,6 +403,7 @@ fun AnalyticsSummaryCard(
                 )
 
                 AnalyticsMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Average",
                     value = formatAnalyticsValue(
                         value = average,
@@ -397,6 +412,7 @@ fun AnalyticsSummaryCard(
                 )
 
                 AnalyticsMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Maximum",
                     value = formatAnalyticsValue(
                         value = maximum,
@@ -408,8 +424,8 @@ fun AnalyticsSummaryCard(
             Spacer(modifier = Modifier.height(10.dp))
 
             Text(
-                text = "$recordCount history records",
-                color = Color.Gray,
+                text = "$recordCount valid history records",
+                color = Color(0xFFC9D3FF),
                 fontSize = 11.sp
             )
         }
@@ -418,25 +434,34 @@ fun AnalyticsSummaryCard(
 
 @Composable
 fun AnalyticsMetric(
+    modifier: Modifier = Modifier,
     label: String,
     value: String
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally
+    Surface(
+        modifier = modifier,
+        color = Color.White.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(10.dp)
     ) {
-        Text(
-            text = label,
-            color = Color.Gray,
-            fontSize = 10.sp
-        )
-
-        Spacer(modifier = Modifier.height(3.dp))
-
-        Text(
-            text = value,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold
-        )
+        Column(
+            modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = value,
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.ExtraBold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = label,
+                color = Color(0xFFD8DEFF),
+                fontSize = 9.sp,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 

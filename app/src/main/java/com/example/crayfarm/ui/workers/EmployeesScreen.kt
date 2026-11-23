@@ -481,6 +481,57 @@ fun EmployeesScreen(
                 }
 
                 item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFF17266F)
+                        ),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Team management",
+                                    color = Color.White,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = "Approve worker requests and manage farm access.",
+                                    color = Color(0xFFC9D3FF),
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Surface(
+                                color = Color.White.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = currentEmployees.size.toString(),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                    Text(
+                                        text = "ACTIVE",
+                                        color = Color(0xFFD8DEFF),
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                item {
                     Text(
                         text = "Add a worker",
                         fontSize = 17.sp,
@@ -892,7 +943,7 @@ fun EmptyEmployeeCard(
         colors = CardDefaults.cardColors(
             containerColor = Color.White
         ),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(16.dp)
     ) {
         Text(
             text = text,
@@ -932,6 +983,31 @@ fun EmployeeCard(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Surface(
+                modifier = Modifier.size(42.dp),
+                color = if (isFormerEmploymentStatus(employee.employmentStatus)) {
+                    Color(0xFFFFE8E8)
+                } else {
+                    Blue.copy(alpha = 0.12f)
+                },
+                shape = CircleShape
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = employee.fullName.trim().take(1).uppercase().ifBlank { "?" },
+                        color = if (isFormerEmploymentStatus(employee.employmentStatus)) {
+                            Color(0xFFC62828)
+                        } else {
+                            Blue
+                        },
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
             Column(
                 modifier = Modifier.weight(1f)
             ) {

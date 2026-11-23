@@ -259,27 +259,45 @@ fun PondReportsScreen(
                 }
 
                 item {
-                    Text(
-                        text = "Report period",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                item {
-                    Row(
+                    Card(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color.White
+                        ),
+                        elevation = CardDefaults.cardElevation(
+                            defaultElevation = 1.dp
+                        ),
+                        shape = RoundedCornerShape(16.dp)
                     ) {
-                        AnalyticsRange.entries.forEach { range ->
-                            AnalyticsChoiceButton(
-                                modifier = Modifier.weight(1f),
-                                label = range.label,
-                                selected = selectedRange == range,
-                                onClick = {
-                                    reportsViewModel.selectRange(range)
-                                }
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Report period",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF17204A)
                             )
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "Choose the time range used for all report summaries.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF68708A)
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                AnalyticsRange.entries.forEach { range ->
+                                    AnalyticsChoiceButton(
+                                        modifier = Modifier.weight(1f),
+                                        label = range.label,
+                                        selected = selectedRange == range,
+                                        onClick = {
+                                            reportsViewModel.selectRange(range)
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -320,10 +338,9 @@ fun PondReportsScreen(
                         }
 
                         item {
-                            Text(
-                                text = "Sensor summary",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold
+                            ReportSectionHeader(
+                                title = "Sensor summary",
+                                subtitle = "Availability, compliance, and measured ranges"
                             )
                         }
 
@@ -343,10 +360,9 @@ fun PondReportsScreen(
                         }
 
                         item {
-                            Text(
-                                text = "Alert summary",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold
+                            ReportSectionHeader(
+                                title = "Alert summary",
+                                subtitle = "Issues recorded during the selected period"
                             )
                         }
 
@@ -382,10 +398,31 @@ fun PondReportsScreen(
                                         "pond"
                                     }
 
-                            Row(
+                            Card(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color(0xFFF7F9FF)
+                                ),
+                                shape = RoundedCornerShape(16.dp)
                             ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "Export report",
+                                        color = Color(0xFF17204A),
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Text(
+                                        text = "Download the selected period's sensor history and alerts.",
+                                        color = Color(0xFF68708A),
+                                        fontSize = 12.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(14.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
                                 Button(
                                     onClick = {
                                         if (
@@ -480,12 +517,14 @@ fun PondReportsScreen(
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
+                                    }
+                                }
                             }
                         }
 
                         item {
                             Text(
-                                text = "CSV and PDF exports contain the report summary, sensor history, and alerts within the selected period.",
+                                text = "CSV and PDF files include the report summary, sensor history, and alerts for this period.",
                                 modifier = Modifier.fillMaxWidth(),
                                 color = Color.Gray,
                                 fontSize = 11.sp,
@@ -496,9 +535,229 @@ fun PondReportsScreen(
                 }
 
                 item {
+                    FarmActivityReportSection(user = user)
+                }
+
+                item {
                     Spacer(modifier = Modifier.height(12.dp))
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun FarmActivityReportSection(user: CrayFarmUser) {
+    val context = LocalContext.current
+    val activityPrefs = remember(user.uid) {
+        context.getSharedPreferences(
+            "crayfarm_dashboard_${user.uid}",
+            android.content.Context.MODE_PRIVATE
+        )
+    }
+    val clearKey = remember(user.farmId) {
+        "activitiesClearedAt_${user.farmId}"
+    }
+    var clearedAt by remember(user.uid, user.farmId) {
+        mutableStateOf(activityPrefs.getLong(clearKey, 0L))
+    }
+    var showClearConfirmation by remember { mutableStateOf(false) }
+    var showAllActivities by remember { mutableStateOf(false) }
+    var activities by remember { mutableStateOf<List<ActivityLog>>(emptyList()) }
+    var errorMessage by remember { mutableStateOf("") }
+
+    val activityLogsQuery = remember(user.farmId) {
+        FirebaseDatabase.getInstance()
+            .getReference("farms")
+            .child(user.farmId)
+            .child("activityLogs")
+            .orderByChild("timestamp")
+            .limitToLast(100)
+    }
+
+    DisposableEffect(activityLogsQuery, clearedAt, user.role, user.uid) {
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val allActivities = snapshot.children.map { child ->
+                    ActivityLog(
+                        id = child.key.orEmpty(),
+                        type = child.child("type").getValue(String::class.java).orEmpty(),
+                        title = child.child("title").getValue(String::class.java).orEmpty(),
+                        message = child.child("message").getValue(String::class.java).orEmpty(),
+                        actorUid = child.child("actorUid").getValue(String::class.java).orEmpty(),
+                        actorName = child.child("actorName").getValue(String::class.java).orEmpty(),
+                        targetUid = child.child("targetUid").getValue(String::class.java).orEmpty(),
+                        targetName = child.child("targetName").getValue(String::class.java).orEmpty(),
+                        timestamp = child.child("timestamp").getValue(Long::class.java) ?: 0L
+                    )
+                }
+
+                activities = allActivities
+                    .asSequence()
+                    .filter { activity ->
+                        activity.timestamp > clearedAt &&
+                            (user.role == "admin" ||
+                                activity.actorUid == user.uid ||
+                                activity.targetUid == user.uid)
+                    }
+                    .sortedByDescending { it.timestamp }
+                    .toList()
+                errorMessage = ""
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                errorMessage = error.message
+            }
+        }
+
+        activityLogsQuery.addValueEventListener(listener)
+        onDispose { activityLogsQuery.removeEventListener(listener) }
+    }
+
+    if (showClearConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmation = false },
+            title = { Text("Clear recent activities?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "This clears the activity list for you on this device. " +
+                        "Farm activity records remain stored in Firebase."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val timestamp = System.currentTimeMillis()
+                        activityPrefs.edit().putLong(clearKey, timestamp).apply()
+                        clearedAt = timestamp
+                        activities = emptyList()
+                        showClearConfirmation = false
+                    }
+                ) {
+                    Text(
+                        text = "Clear",
+                        color = Color(0xFFC62828),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirmation = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                ReportSectionHeader(
+                    title = "Farm activity",
+                    subtitle = "Recent actions and important system events"
+                )
+            }
+            if (activities.isNotEmpty()) {
+                TextButton(onClick = { showClearConfirmation = true }) {
+                    Text(
+                        text = "Clear",
+                        color = Color(0xFFC62828),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        when {
+            errorMessage.isNotBlank() -> {
+                ReportEmptyCard("Unable to load activities: $errorMessage")
+            }
+
+            activities.isEmpty() -> {
+                ReportEmptyCard("No activity has been recorded yet.")
+            }
+
+            else -> {
+                activities
+                    .let { list ->
+                        if (showAllActivities) list else list.take(5)
+                    }
+                    .forEach { activity ->
+                    ReportActivityCard(activity = activity)
+                }
+
+                if (activities.size > 5) {
+                    TextButton(
+                        onClick = { showAllActivities = !showAllActivities },
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    ) {
+                        Text(
+                            text = if (showAllActivities) {
+                                "Show less"
+                            } else {
+                                "Show all ${activities.size} activities"
+                            },
+                            color = Blue,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportActivityCard(activity: ActivityLog) {
+    val accent = activityColor(activity.type)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.size(32.dp),
+                color = accent.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = activity.title.take(1).uppercase().ifBlank { "•" },
+                        color = accent,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = activity.title,
+                    color = Color(0xFF17204A),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = activity.message,
+                    color = Color(0xFF68708A),
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = formatActivityTime(activity.timestamp),
+                color = Color(0xFF68708A),
+                fontSize = 10.sp,
+                textAlign = TextAlign.End
+            )
         }
     }
 }
@@ -511,42 +770,51 @@ fun ReportOverviewCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = Color.White
+            containerColor = Color(0xFF17266F)
         ),
         elevation = CardDefaults.cardElevation(
             defaultElevation = 2.dp
         ),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(18.dp)
     ) {
         Column(
             modifier = Modifier.padding(16.dp)
         ) {
             Text(
-                text = selectedRange.label,
-                color = Blue,
-                fontSize = 17.sp,
+                text = "Performance overview",
+                color = Color.White,
+                fontSize = 18.sp,
                 fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = selectedRange.label,
+                color = Color(0xFFC9D3FF),
+                fontSize = 12.sp
             )
 
             Spacer(modifier = Modifier.height(12.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                AnalyticsMetric(
+                ReportOverviewMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Records",
                     value = summary.historyRecordCount.toString()
                 )
 
-                AnalyticsMetric(
+                ReportOverviewMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Availability",
                     value = formatReportPercent(
                         summary.overallAvailabilityPercent
                     )
                 )
 
-                AnalyticsMetric(
+                ReportOverviewMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Alerts",
                     value = summary.alertCount.toString()
                 )
@@ -556,29 +824,87 @@ fun ReportOverviewCard(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                AnalyticsMetric(
+                ReportOverviewMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Warnings",
                     value = summary.warningAlertCount.toString()
                 )
 
-                AnalyticsMetric(
+                ReportOverviewMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Critical",
                     value = summary.criticalAlertCount.toString()
                 )
 
-                AnalyticsMetric(
+                ReportOverviewMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Resolved",
                     value = summary.resolvedAlertCount.toString()
                 )
 
-                AnalyticsMetric(
+                ReportOverviewMetric(
+                    modifier = Modifier.weight(1f),
                     label = "Acknowledged",
                     value = summary.acknowledgedAlertCount.toString()
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun ReportOverviewMetric(
+    modifier: Modifier = Modifier,
+    label: String,
+    value: String
+) {
+    Surface(
+        modifier = modifier,
+        color = Color.White.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = value,
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.ExtraBold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = label,
+                color = Color(0xFFD8DEFF),
+                fontSize = 9.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReportSectionHeader(
+    title: String,
+    subtitle: String
+) {
+    Column {
+        Text(
+            text = title,
+            color = Color(0xFF17204A),
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = subtitle,
+            color = Color(0xFF68708A),
+            fontSize = 12.sp
+        )
     }
 }
 

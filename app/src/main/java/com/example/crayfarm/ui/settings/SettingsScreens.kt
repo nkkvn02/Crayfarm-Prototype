@@ -95,6 +95,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Opacity
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Thermostat
 import androidx.compose.material.icons.rounded.Water
 import com.google.firebase.auth.EmailAuthProvider
@@ -171,6 +172,7 @@ fun SettingsScreen(
 
                 item {
                     SettingsOptionCard(
+                        icon = Icons.Rounded.Person,
                         title = "Account",
                         subtitle = if (user.role == "admin") {
                             "Name, email, password, and logout"
@@ -185,6 +187,7 @@ fun SettingsScreen(
 
                 item {
                     SettingsOptionCard(
+                        icon = Icons.Rounded.Agriculture,
                         title = "Farm",
                         subtitle = if (user.role == "admin") {
                             "Photo, farm name, and description"
@@ -207,6 +210,7 @@ fun SettingsScreen(
 
 @Composable
 fun SettingsOptionCard(
+    icon: ImageVector = Icons.Rounded.ChevronRight,
     title: String,
     subtitle: String = "",
     danger: Boolean = false,
@@ -239,6 +243,27 @@ fun SettingsOptionCard(
                 .padding(horizontal = 14.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Surface(
+                modifier = Modifier.size(40.dp),
+                color = if (danger) {
+                    Color(0xFFFFE8E8)
+                } else {
+                    Blue.copy(alpha = 0.10f)
+                },
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = if (danger) Color(0xFFC62828) else Blue,
+                        modifier = Modifier.size(21.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
             Column(
                 modifier = Modifier.weight(1f)
             ) {

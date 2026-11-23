@@ -486,7 +486,8 @@ fun LoginScreen(
     initialErrorMessage: String = "",
     onLoginSuccess: (CrayFarmUser) -> Unit,
     onWaitingForApproval: (CrayFarmUser) -> Unit,
-    onRegisterClick: () -> Unit
+    onRegisterClick: () -> Unit,
+    onForgotPasswordClick: () -> Unit
 ) {
     val auth = remember { FirebaseAuth.getInstance() }
 
@@ -620,6 +621,18 @@ fun LoginScreen(
                 colors = authenticationFieldColors(),
                 shape = RoundedCornerShape(13.dp)
             )
+
+            TextButton(
+                onClick = onForgotPasswordClick,
+                enabled = !isLoading,
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text(
+                    text = "Forgot Password?",
+                    color = Blue,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
 
             if (errorMessage.isNotBlank()) {
                 Spacer(modifier = Modifier.height(12.dp))
@@ -765,6 +778,208 @@ fun LoginScreen(
             }
 
         }
+    }
+}
+
+@Composable
+fun ForgotPasswordScreen(
+    onBackToLogin: () -> Unit
+) {
+    val auth = remember { FirebaseAuth.getInstance() }
+    var email by remember { mutableStateOf("") }
+    var message by remember { mutableStateOf("") }
+    var isSuccess by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF101F65), Blue, Color(0xFF1E2D8E))
+                )
+            )
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawCircle(
+                color = Color.White.copy(alpha = 0.045f),
+                radius = size.minDimension * 0.48f,
+                center = Offset(size.width, size.height * 0.04f)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 22.dp, top = 20.dp, end = 22.dp, bottom = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBackToLogin) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = "Back to login",
+                        tint = Color.White
+                    )
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                CrayFarmBrandPill()
+                Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.size(48.dp))
+            }
+
+            Spacer(modifier = Modifier.height(34.dp))
+
+            Text(
+                text = "Forgot Password",
+                color = Color.White,
+                fontSize = 28.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+            Spacer(modifier = Modifier.height(7.dp))
+            Text(
+                text = "We'll send a reset link to your CrayFarm email.",
+                color = Color(0xFFDCE2FF),
+                fontSize = 14.sp,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFDFDFF)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+                shape = RoundedCornerShape(26.dp)
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Text(
+                        text = if (isSuccess) "Check your email" else "Reset your password",
+                        color = Color(0xFF17204A),
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = if (isSuccess) {
+                            "Password reset email sent. Please check your email for instructions."
+                        } else {
+                            "Enter the email address associated with your account."
+                        },
+                        color = Color(0xFF5A6384),
+                        fontSize = 14.sp
+                    )
+
+                    if (!isSuccess) {
+                        Spacer(modifier = Modifier.height(18.dp))
+                        OutlinedTextField(
+                            value = email,
+                            onValueChange = {
+                                email = it
+                                message = ""
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Email") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                            colors = authenticationFieldColors(),
+                            shape = RoundedCornerShape(13.dp)
+                        )
+                    }
+
+                    if (message.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = message,
+                            color = if (isSuccess) SafeGreen else Color(0xFFBA1A1A),
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(22.dp))
+                    if (isSuccess) {
+                        Button(
+                            onClick = onBackToLogin,
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AuthPrimaryButtonColor,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text("Back to Login", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                val cleanEmail = email.trim()
+                                when {
+                                    cleanEmail.isBlank() -> message = "Please enter your email address."
+                                    !Patterns.EMAIL_ADDRESS.matcher(cleanEmail).matches() ->
+                                        message = "Please enter a valid email address."
+                                    else -> {
+                                        isLoading = true
+                                        message = ""
+                                        auth.sendPasswordResetEmail(cleanEmail)
+                                            .addOnSuccessListener {
+                                                isLoading = false
+                                                isSuccess = true
+                                            }
+                                            .addOnFailureListener { exception ->
+                                                isLoading = false
+                                                message = passwordResetErrorMessage(exception.message)
+                                            }
+                                    }
+                                }
+                            },
+                            enabled = !isLoading,
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AuthPrimaryButtonColor,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("Send Reset Link", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+            TextButton(onClick = onBackToLogin, enabled = !isLoading) {
+                Text(
+                    text = "← Back to Login",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+private fun passwordResetErrorMessage(rawMessage: String?): String {
+    val message = rawMessage.orEmpty()
+    return when {
+        message.contains("network", ignoreCase = true) -> "Check your internet connection and try again."
+        message.contains("too many", ignoreCase = true) -> "Too many attempts. Please try again later."
+        else -> "Unable to send a reset link right now. Please try again."
     }
 }
 

@@ -4,6 +4,8 @@
  * Real sensors:
  * - DS18B20 temperature sensor on GPIO 4
  * - Analog turbidity sensor on GPIO 34
+ * - DFRobot Gravity TDS Meter V1.0 on GPIO 32
+ * - DFRobot Gravity Analog pH Sensor V2 on GPIO 35
  * - AJ-SR04M waterproof ultrasonic water-level sensor (depth in cm)
  *      TRIG -> GPIO 26
  *      ECHO -> GPIO 27 (through a 5V-to-3.3V voltage divider)
@@ -11,12 +13,6 @@
  * Turbidity is uploaded as a calibrated relative percentage:
  * - 0%   = clear-water reference
  * - 100% = cloudy-water reference
- *
- * Sensors not yet connected:
- * - pH
- * - TDS
- *
- * pH and TDS are NOT uploaded to Firebase.
  *
  * Upload behavior:
  * - Latest readings: every 5 seconds
@@ -29,7 +25,7 @@
  */
 
 const char *DEVICE_ID = "CRAY-X7K9_Q2M8-V4R6_N1P3";
-const char *FIRMWARE_VERSION = "1.1.0";
+const char *FIRMWARE_VERSION = "1.2.0";
 
 #define ENABLE_DATABASE
 #define ENABLE_USER_AUTH
@@ -54,6 +50,8 @@ const char *FIRMWARE_VERSION = "1.1.0";
 
 #define ONE_WIRE_BUS 4
 #define TURBIDITY_PIN 34
+#define TDS_PIN 32
+#define PH_PIN 35
 
 #define WATER_TRIG_PIN 26
 #define WATER_ECHO_PIN 27
@@ -82,6 +80,15 @@ const int TURBIDITY_SAMPLE_DELAY_MS = 10;
 // With a 100kΩ pull-down resistor from GPIO 34 to GND,
 // a disconnected turbidity signal reads close to 0 V.
 const float TURBIDITY_DISCONNECTED_VOLTAGE = 0.05f;
+
+const int TDS_SAMPLE_COUNT = 30;
+const int PH_SAMPLE_COUNT = 30;
+const int ANALOG_SAMPLE_DELAY_MS = 10;
+
+// Two-point calibration measured from this pH sensor at approximately 29 C.
+// pH 7.00 = 1.533 V; pH 4.00 = 2.059 V.
+const float PH7_CALIBRATION_VOLTAGE = 1.533f;
+const float PH_VOLTS_PER_PH = 0.175333f;
 
 UserAuth user_auth(
     CRAYFARM_FIREBASE_API_KEY,
@@ -131,9 +138,15 @@ void readSensors(
     bool &temperatureConnected,
     float &turbidity,
     bool &turbidityConnected,
+    float &tds,
+    bool &tdsConnected,
+    float &ph,
+    bool &phConnected,
     float &waterLevel,
     bool &waterLevelConnected
 );
+float readTDS(float temperature);
+float readPH();
 float readRelativeTurbidityPercent();
 bool readWaterLevelCm(
     float &waterLevelCm,
@@ -208,6 +221,10 @@ void uploadLatestReadings(
     bool temperatureConnected,
     float turbidity,
     bool turbidityConnected,
+    float tds,
+    bool tdsConnected,
+    float ph,
+    bool phConnected,
     float waterLevel,
     bool waterLevelConnected
 );
@@ -216,6 +233,10 @@ void uploadHistoryRecord(
     bool temperatureConnected,
     float turbidity,
     bool turbidityConnected,
+    float tds,
+    bool tdsConnected,
+    float ph,
+    bool phConnected,
     float waterLevel,
     bool waterLevelConnected
 );
@@ -226,6 +247,10 @@ String buildReadingJson(
     bool temperatureConnected,
     float turbidity,
     bool turbidityConnected,
+    float tds,
+    bool tdsConnected,
+    float ph,
+    bool phConnected,
     float waterLevel,
     bool waterLevelConnected,
     uint64_t timestamp,
@@ -249,6 +274,8 @@ void setup()
     sensors.begin();
 
     pinMode(TURBIDITY_PIN, INPUT);
+    pinMode(TDS_PIN, INPUT);
+    pinMode(PH_PIN, INPUT);
 
     pinMode(WATER_TRIG_PIN, OUTPUT);
     digitalWrite(WATER_TRIG_PIN, LOW);
@@ -259,6 +286,8 @@ void setup()
         TURBIDITY_PIN,
         ADC_11db
     );
+    analogSetPinAttenuation(TDS_PIN, ADC_11db);
+    analogSetPinAttenuation(PH_PIN, ADC_11db);
 
     wifiProvisioning.begin(DEVICE_ID);
     wifiProvisioning.connectOrProvision();
@@ -330,6 +359,12 @@ void loop()
     float turbidity = NAN;
     bool turbidityConnected = false;
 
+    float tds = NAN;
+    bool tdsConnected = false;
+
+    float ph = NAN;
+    bool phConnected = false;
+
     float waterLevel = NAN;
     bool waterLevelConnected = false;
 
@@ -338,6 +373,10 @@ void loop()
         temperatureConnected,
         turbidity,
         turbidityConnected,
+        tds,
+        tdsConnected,
+        ph,
+        phConnected,
         waterLevel,
         waterLevelConnected
     );
@@ -351,6 +390,10 @@ void loop()
             temperatureConnected,
             turbidity,
             turbidityConnected,
+            tds,
+            tdsConnected,
+            ph,
+            phConnected,
             waterLevel,
             waterLevelConnected
         );
@@ -365,6 +408,10 @@ void loop()
             temperatureConnected,
             turbidity,
             turbidityConnected,
+            tds,
+            tdsConnected,
+            ph,
+            phConnected,
             waterLevel,
             waterLevelConnected
         );
@@ -565,6 +612,10 @@ void readSensors(
     bool &temperatureConnected,
     float &turbidity,
     bool &turbidityConnected,
+    float &tds,
+    bool &tdsConnected,
+    float &ph,
+    bool &phConnected,
     float &waterLevel,
     bool &waterLevelConnected
 )
@@ -672,6 +723,35 @@ void readSensors(
         Serial.println(" %");
     }
 
+    // ---------------- TDS ----------------
+    tds = readTDS(temperature);
+    tdsConnected = !isnan(tds);
+
+    if (tdsConnected)
+    {
+        Serial.print("TDS: ");
+        Serial.print(tds, 0);
+        Serial.println(" ppm");
+    }
+    else
+    {
+        Serial.println("TDS sensor: DISCONNECTED");
+    }
+
+    // ---------------- pH ----------------
+    ph = readPH();
+    phConnected = !isnan(ph);
+
+    if (phConnected)
+    {
+        Serial.print("pH: ");
+        Serial.println(ph, 2);
+    }
+    else
+    {
+        Serial.println("pH sensor: NO VALID READING");
+    }
+
     // ---------------- Water level (AJ-SR04M) ----------------
     float waterDistanceCm = NAN;
 
@@ -699,8 +779,98 @@ void readSensors(
         );
     }
 
-    Serial.println("pH: NOT CONNECTED");
-    Serial.println("TDS: NOT CONNECTED");
+}
+
+float readPH()
+{
+    uint32_t totalMillivolts = 0;
+
+    for (int sample = 0; sample < PH_SAMPLE_COUNT; sample++)
+    {
+        totalMillivolts += analogReadMilliVolts(PH_PIN);
+        delay(ANALOG_SAMPLE_DELAY_MS);
+    }
+
+    const float voltage =
+        totalMillivolts /
+        static_cast<float>(PH_SAMPLE_COUNT) /
+        1000.0f;
+
+    // GPIO35 is a 3.3 V ADC input. Do not turn an invalid electrical signal
+    // into a misleading pH value.
+    if (!isfinite(voltage) || voltage < 0.0f || voltage > 3.3f)
+    {
+        return NAN;
+    }
+
+    const float phValue =
+        7.00f -
+        ((voltage - PH7_CALIBRATION_VOLTAGE) / PH_VOLTS_PER_PH);
+
+    if (!isfinite(phValue) || phValue < 0.0f || phValue > 14.0f)
+    {
+        return NAN;
+    }
+
+    Serial.print("pH voltage: ");
+    Serial.print(voltage, 3);
+    Serial.println(" V");
+
+    return phValue;
+}
+
+float readTDS(float temperature)
+{
+    if (!isfinite(temperature))
+    {
+        return NAN;
+    }
+
+    uint32_t totalMillivolts = 0;
+
+    for (int sample = 0; sample < TDS_SAMPLE_COUNT; sample++)
+    {
+        totalMillivolts += analogReadMilliVolts(TDS_PIN);
+        delay(ANALOG_SAMPLE_DELAY_MS);
+    }
+
+    const float voltage =
+        totalMillivolts /
+        static_cast<float>(TDS_SAMPLE_COUNT) /
+        1000.0f;
+
+    // A valid TDS value can be near either end of the measurement range, so
+    // only reject readings outside the physical ADC range.
+    if (!isfinite(voltage) || voltage < 0.0f || voltage > 3.6f)
+    {
+        return NAN;
+    }
+
+    const float compensationCoefficient =
+        1.0f + 0.02f * (temperature - 25.0f);
+
+    if (compensationCoefficient <= 0.0f)
+    {
+        return NAN;
+    }
+
+    const float compensationVoltage = voltage / compensationCoefficient;
+    const float tdsValue =
+        (133.42f * compensationVoltage * compensationVoltage * compensationVoltage
+            - 255.86f * compensationVoltage * compensationVoltage
+            + 857.39f * compensationVoltage) *
+        0.5f;
+
+    if (!isfinite(tdsValue))
+    {
+        return NAN;
+    }
+
+    Serial.print("TDS voltage: ");
+    Serial.print(voltage, 3);
+    Serial.println(" V");
+
+    return constrain(tdsValue, 0.0f, 1000.0f);
 }
 
 float readRelativeTurbidityPercent()
@@ -766,6 +936,10 @@ void uploadLatestReadings(
     bool temperatureConnected,
     float turbidity,
     bool turbidityConnected,
+    float tds,
+    bool tdsConnected,
+    float ph,
+    bool phConnected,
     float waterLevel,
     bool waterLevelConnected
 )
@@ -775,6 +949,10 @@ void uploadLatestReadings(
         temperatureConnected,
         turbidity,
         turbidityConnected,
+        tds,
+        tdsConnected,
+        ph,
+        phConnected,
         waterLevel,
         waterLevelConnected,
         0,
@@ -782,8 +960,8 @@ void uploadLatestReadings(
         true
     );
 
-    // set() replaces the entire latest node, so any old
-    // dummy ph/tds/waterLevel fields are removed.
+    // set() replaces the entire latest node, so disconnected sensor values
+    // are removed instead of leaving stale readings behind.
     const bool success =
         Database.set<object_t>(
             aClient,
@@ -813,6 +991,10 @@ void uploadHistoryRecord(
     bool temperatureConnected,
     float turbidity,
     bool turbidityConnected,
+    float tds,
+    bool tdsConnected,
+    float ph,
+    bool phConnected,
     float waterLevel,
     bool waterLevelConnected
 )
@@ -841,6 +1023,10 @@ void uploadHistoryRecord(
         temperatureConnected,
         turbidity,
         turbidityConnected,
+        tds,
+        tdsConnected,
+        ph,
+        phConnected,
         waterLevel,
         waterLevelConnected,
         recordedAt,
@@ -906,6 +1092,10 @@ String buildReadingJson(
     bool temperatureConnected,
     float turbidity,
     bool turbidityConnected,
+    float tds,
+    bool tdsConnected,
+    float ph,
+    bool phConnected,
     float waterLevel,
     bool waterLevelConnected,
     uint64_t timestamp,
@@ -952,8 +1142,26 @@ String buildReadingJson(
     }
 
     json +=
-        ",\"phConnected\":false"
-        ",\"tdsConnected\":false";
+        ",\"phConnected\":" +
+        String(phConnected ? "true" : "false");
+
+    if (phConnected)
+    {
+        json +=
+            ",\"ph\":" +
+            String(ph, 2);
+    }
+
+    json +=
+        ",\"tdsConnected\":" +
+        String(tdsConnected ? "true" : "false");
+
+    if (tdsConnected)
+    {
+        json +=
+            ",\"tds\":" +
+            String(tds, 1);
+    }
 
     json +=
         ",\"waterLevelConnected\":" +

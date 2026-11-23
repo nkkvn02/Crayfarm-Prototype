@@ -129,7 +129,7 @@ fun PondDashboardContent(
 ) {
     val context = LocalContext.current
 
-    // "Clear" only hides old alerts/activities for this signed-in user
+    // "Clear" only hides old alerts for this signed-in user
     // on this device. Firebase history is preserved for reports/audit.
     val dashboardPrefs = remember(user.uid) {
         context.getSharedPreferences(
@@ -140,10 +140,6 @@ fun PondDashboardContent(
 
     val alertsClearKey = remember(user.farmId, pond.pondId) {
         "alertsClearedAt_${user.farmId}_${pond.pondId}"
-    }
-
-    val activitiesClearKey = remember(user.farmId) {
-        "activitiesClearedAt_${user.farmId}"
     }
 
     var alertsClearedAt by remember(
@@ -159,23 +155,7 @@ fun PondDashboardContent(
         )
     }
 
-    var activitiesClearedAt by remember(
-        user.uid,
-        user.farmId
-    ) {
-        mutableStateOf(
-            dashboardPrefs.getLong(
-                activitiesClearKey,
-                0L
-            )
-        )
-    }
-
     var showClearAlertsConfirmation by remember {
-        mutableStateOf(false)
-    }
-
-    var showClearActivitiesConfirmation by remember {
         mutableStateOf(false)
     }
 
@@ -236,11 +216,6 @@ fun PondDashboardContent(
         }
     }
 
-    var activities by remember {
-        mutableStateOf<List<ActivityLog>>(emptyList())
-    }
-    var activityError by remember { mutableStateOf("") }
-
     var alerts by remember {
         mutableStateOf<List<PondAlert>>(emptyList())
     }
@@ -300,15 +275,6 @@ fun PondDashboardContent(
             .limitToLast(100)
     }
 
-    val activityLogsQuery = remember(user.farmId) {
-        FirebaseDatabase.getInstance()
-            .getReference("farms")
-            .child(user.farmId)
-            .child("activityLogs")
-            .orderByChild("timestamp")
-            .limitToLast(100)
-    }
-
     LaunchedEffect(refreshRequest) {
         if (refreshRequest == 0) {
             return@LaunchedEffect
@@ -321,7 +287,6 @@ fun PondDashboardContent(
         latestReadingsRef.get()
         thresholdsRef.get()
         alertsQuery.get()
-        activityLogsQuery.get()
 
         // Keep the indicator visible long enough to make the gesture clear,
         // even when Firebase responds immediately from its synchronized cache.
@@ -611,72 +576,6 @@ fun PondDashboardContent(
 
         onDispose {
             alertsQuery.removeEventListener(listener)
-        }
-    }
-
-    DisposableEffect(activityLogsQuery, activitiesClearedAt) {
-        val listener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                val allActivities = snapshot.children.map { child ->
-                    ActivityLog(
-                        id = child.key.orEmpty(),
-                        type = child.child("type")
-                            .getValue(String::class.java)
-                            .orEmpty(),
-                        title = child.child("title")
-                            .getValue(String::class.java)
-                            .orEmpty(),
-                        message = child.child("message")
-                            .getValue(String::class.java)
-                            .orEmpty(),
-                        actorUid = child.child("actorUid")
-                            .getValue(String::class.java)
-                            .orEmpty(),
-                        actorName = child.child("actorName")
-                            .getValue(String::class.java)
-                            .orEmpty(),
-                        targetUid = child.child("targetUid")
-                            .getValue(String::class.java)
-                            .orEmpty(),
-                        targetName = child.child("targetName")
-                            .getValue(String::class.java)
-                            .orEmpty(),
-                        timestamp = child.child("timestamp")
-                            .getValue(Long::class.java)
-                            ?: 0L
-                    )
-                }
-
-                activities = if (user.role == "admin") {
-                    allActivities
-                        .filter { activity ->
-                            activity.timestamp > activitiesClearedAt
-                        }
-                        .sortedByDescending { it.timestamp }
-                } else {
-                    allActivities
-                        .filter { activity ->
-                            (
-                                activity.actorUid == user.uid ||
-                                        activity.targetUid == user.uid
-                            ) &&
-                                    activity.timestamp > activitiesClearedAt
-                        }
-                        .sortedByDescending { it.timestamp }
-                }
-
-                activityError = ""
-            }
-
-            override fun onCancelled(error: DatabaseError) {
-                activityError = error.message
-            }
-        }
-
-        activityLogsQuery.addValueEventListener(listener)
-
-        onDispose {
-            activityLogsQuery.removeEventListener(listener)
         }
     }
 
@@ -994,58 +893,6 @@ fun PondDashboardContent(
     }
 
 
-    if (showClearActivitiesConfirmation) {
-        AlertDialog(
-            onDismissRequest = {
-                showClearActivitiesConfirmation = false
-            },
-            title = {
-                Text(
-                    text = "Clear recent activities?",
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Text(
-                    text = "This clears the Recent activities list for you on this device. The farm activity records remain stored in Firebase."
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val clearedAt = System.currentTimeMillis()
-
-                        dashboardPrefs.edit()
-                            .putLong(
-                                activitiesClearKey,
-                                clearedAt
-                            )
-                            .apply()
-
-                        activitiesClearedAt = clearedAt
-                        activities = emptyList()
-                        showClearActivitiesConfirmation = false
-                    }
-                ) {
-                    Text(
-                        text = "Clear",
-                        color = Color(0xFFC62828),
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        showClearActivitiesConfirmation = false
-                    }
-                ) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = LightBlue
@@ -1085,12 +932,34 @@ fun PondDashboardContent(
                         sensorConnections.disconnectedCount()
                 )
 
-                Text(
-                    text = "Press and hold a sensor card to change its threshold.",
+                Card(
                     modifier = Modifier.fillMaxWidth(),
-                    fontSize = 11.sp,
-                    color = Color.Gray,
-                    textAlign = TextAlign.Center
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White.copy(alpha = 0.72f)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(7.dp),
+                            color = Blue,
+                            shape = CircleShape
+                        ) {}
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Press and hold a sensor card to change its threshold.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF536078)
+                        )
+                    }
+                }
+
+                DashboardSectionHeader(
+                    title = "Live sensor readings",
+                    subtitle = "Current values from your pond monitoring device"
                 )
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1207,96 +1076,31 @@ fun PondDashboardContent(
                     }
                 )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Recent activities",
-                        modifier = Modifier.weight(1f),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF1D1B20)
-                    )
-
-                    if (activities.isNotEmpty()) {
-                        Text(
-                            text = "Clear",
-                            modifier = Modifier
-                                .clickable {
-                                    showClearActivitiesConfirmation = true
-                                }
-                                .padding(
-                                    horizontal = 4.dp,
-                                    vertical = 3.dp
-                                ),
-                            color = Color(0xFFC62828),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                when {
-                    activityError.isNotBlank() -> {
-                        Text(
-                            text = "Unable to load activities: $activityError",
-                            modifier = Modifier.fillMaxWidth(),
-                            color = Color(0xFFC62828),
-                            fontSize = 12.sp,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-
-                    activities.isEmpty() -> {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = Color.White
-                            ),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "No activity has been recorded yet.",
-                                modifier = Modifier.padding(14.dp),
-                                color = Color.Gray,
-                                fontSize = 12.sp,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-
-                    else -> {
-                        // Only this activity area scrolls.
-                        // The sensor/dashboard area above remains fixed.
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(172.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            items(
-                                items = activities,
-                                key = { activity ->
-                                    activity.id.ifBlank {
-                                        "${activity.timestamp}_${activity.type}_${activity.title}"
-                                    }
-                                }
-                            ) { activity ->
-                                ActivityCard(
-                                    title = activity.title,
-                                    message = activity.message,
-                                    time = formatActivityTime(activity.timestamp),
-                                    color = activityColor(activity.type)
-                                )
-                            }
-                        }
-                    }
-                }
             }
         }
     }
 }
+}
+
+@Composable
+private fun DashboardSectionHeader(
+    title: String,
+    subtitle: String
+) {
+    Column {
+        Text(
+            text = title,
+            color = Color(0xFF17204A),
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = subtitle,
+            color = Color(0xFF68708A),
+            fontSize = 11.sp
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

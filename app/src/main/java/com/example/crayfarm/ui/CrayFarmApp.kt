@@ -111,6 +111,18 @@ fun CrayFarmApp() {
                         onRegisterClick = {
                             authErrorMessage = ""
                             authPage = AuthPage.REGISTER
+                        },
+                        onForgotPasswordClick = {
+                            authErrorMessage = ""
+                            authPage = AuthPage.FORGOT_PASSWORD
+                        }
+                    )
+                }
+
+                AuthPage.FORGOT_PASSWORD -> {
+                    ForgotPasswordScreen(
+                        onBackToLogin = {
+                            authPage = AuthPage.LOGIN
                         }
                     )
                 }
