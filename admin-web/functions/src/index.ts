@@ -9,6 +9,7 @@ import {listAssignmentPonds, updateDeviceAssignment} from './deviceAssignment';
 import {countOverviewInventory} from './overviewInventory';
 import {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
 import {filterHumanAccounts, readDeviceRegistryPage} from './deviceRegistry';
+import {createDevice, DeviceProvisioningError} from './deviceProvisioning';
 const usingEmulators=process.env.FUNCTIONS_EMULATOR==='true';
 const app = initializeApp({databaseURL:usingEmulators?'https://demo-crayfarm-default-rtdb.firebaseio.com':'https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app'});
 const auth = getAuth(), db = getDatabase();
@@ -169,6 +170,14 @@ export const deviceDirectory = endpoint(async data => {
   return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor};
 });
 export const deviceInfo = endpoint(data => readDeviceInfo(db, data.deviceId));
+export const provisionDevice = endpoint(async (data, actor) => {
+  try { return await createDevice(db, auth, data, actor); }
+  catch (error) {
+    if (!(error instanceof DeviceProvisioningError)) throw error;
+    const code = error.status === 400 ? 'invalid-argument' : error.status === 409 ? 'failed-precondition' : 'unavailable';
+    throw new HttpsError(code, error.message);
+  }
+});
 export const assignmentPonds = endpoint(data => listAssignmentPonds(db, data.farmId, data.cursor));
 export const changeDeviceAssignment = endpoint(async (data, actor) => {
   try { return await updateDeviceAssignment(db, data, actor); }

@@ -14,6 +14,7 @@ const {readDeviceInfo, saveDeviceInfo} = functionsRequire('./lib/deviceInfo.js')
 const {listAssignmentPonds, updateDeviceAssignment} = functionsRequire('./lib/deviceAssignment.js');
 const {countOverviewInventory} = functionsRequire('./lib/overviewInventory.js');
 const {filterHumanAccounts, readDeviceRegistryPage} = functionsRequire('./lib/deviceRegistry.js');
+const {createDevice} = functionsRequire('./lib/deviceProvisioning.js');
 const {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} = functionsRequire('./lib/inactiveAccounts.js');
 const deploymentMode = process.env.CRAYFARM_DEPLOYMENT_MODE?.trim().toLowerCase();
 const hostedMode = deploymentMode === 'hostinger' || deploymentMode === 'render';
@@ -219,6 +220,7 @@ const handlers = {
     const devices = await Promise.all(entries.map(entry => deviceView(entry.id, entry.value)));
     return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor};
   },
+  provisionDevice: (data, actor) => createDevice(db, auth, data, actor),
   deviceInfo: async data => {
     try { return await readDeviceInfo(db, data.deviceId); }
     catch (error) { throw deviceFailure(error); }

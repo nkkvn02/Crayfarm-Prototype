@@ -1,13 +1,14 @@
-import {FormEvent, useEffect, useRef, useState} from 'react';
-import {AlertTriangle, Cpu, Plus, QrCode, RefreshCw, Search, ShieldCheck, ToggleLeft, ToggleRight, X} from 'lucide-react';
+import {useEffect, useRef, useState, type FormEvent} from 'react';
+import {AlertTriangle, Cpu, Plus, QrCode, RefreshCw, Search, ToggleLeft, ToggleRight, X} from 'lucide-react';
 import {QRCodeSVG} from 'qrcode.react';
 import DeviceAssignment from './DeviceAssignment';
+import DeviceCreation from './DeviceCreation';
 
 type Device = {
   deviceId:string;active:boolean|null;status:string|null;farmId:string|null;pondId:string|null;
   linkedAt:number|null;registeredAt:number|null;authConfigured:boolean;farmName:string|null;pondName:string|null;
 };
-type Props = {active:boolean;api:(name:string,data?:unknown)=>Promise<any>;onOperation:(message:string, registered?:boolean)=>Promise<void>};
+type Props = {active:boolean;actorUid:string;apiKey:string;api:(name:string,data?:unknown)=>Promise<any>;onOperation:(message:string, registered?:boolean)=>Promise<void>};
 type DeviceInfo = {displayName:string;maintenanceNotes:string};
 type DeviceFilters = {search:string;status:string};
 const defaultDeviceFilters: DeviceFilters = {search:'',status:''};
@@ -95,17 +96,15 @@ function DeviceDetails({device, api, onClose}: {device:Device;api:Props['api'];o
   );
 }
 
-export default function DeviceRegistry({active,api,onOperation}:Props) {
+export default function DeviceRegistry({active,actorUid,apiKey,api,onOperation}:Props) {
   const [page,setPage]=useState<{devices:Device[];filters:DeviceFilters;cursor:string|null;next:string|null}|null>(null);
   const initialLoad = useRef(false);
   const devices = page?.devices ?? [];
   const [search,setSearch]=useState(''),[status,setStatus]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
-  const [showRegister,setShowRegister]=useState(false),[deviceId,setDeviceId]=useState(''),[authUid,setAuthUid]=useState('');
+  const [showCreation,setShowCreation]=useState(false);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [assignmentDevice, setAssignmentDevice] = useState<Device | null>(null);
   const pending=sessionStorage.getItem('crayfarm-device-pending');
-  const appliedSearch = page?.filters.search.trim();
-  const appliedStatus = page?.filters.status;
   async function run(task:()=>Promise<void>){setBusy(true);setError('');try{await task();}catch(reason:any){setError(reason.message||'Request failed.');}finally{setBusy(false);}}
   async function load(filters:DeviceFilters, cursor:string|null = null) {
     const result = await api('deviceDirectory', {cursor, search:filters.search.trim(), status:filters.status});
@@ -120,11 +119,6 @@ export default function DeviceRegistry({active,api,onOperation}:Props) {
     });
   }, [active, page]);
   const refresh = () => load(page?.filters ?? defaultDeviceFilters, page?.cursor);
-  async function showAllDevices() {
-    await load(defaultDeviceFilters);
-    setSearch('');
-    setStatus('');
-  }
   async function perform(request:any) {
     sessionStorage.setItem('crayfarm-device-pending', JSON.stringify(request));
     const result = await api(request.actorUid ? 'reconcileDeviceOperation' : 'mutateDevice',
@@ -136,9 +130,12 @@ export default function DeviceRegistry({active,api,onOperation}:Props) {
       refresh(),
     ]);
   }
-  async function register(event:FormEvent){event.preventDefault();const request={deviceId:deviceId.trim().toUpperCase(),authUid:authUid.trim(),action:'register',operationId:`${Date.now()}_${crypto.randomUUID()}`};await perform(request);setDeviceId('');setAuthUid('');setShowRegister(false);}
   async function toggle(device:Device,action:'activate'|'deactivate'){if(!window.confirm(`${action==='activate'?'Activate':'Deactivate'} ${device.deviceId}?`))return;await perform({deviceId:device.deviceId,action,operationId:`${Date.now()}_${crypto.randomUUID()}`});}
   return <>
+    <DeviceCreation open={showCreation} actorUid={actorUid} apiKey={apiKey} api={api} onClose={() => setShowCreation(false)}
+      onCreated={deviceId => void run(async () => {
+        await Promise.all([refresh(), onOperation(`Device ${deviceId} created.`, true)]);
+      })}/>
     {assignmentDevice && <DeviceAssignment
       deviceId={assignmentDevice.deviceId}
       from={assignmentDevice.farmId && assignmentDevice.pondId
@@ -155,27 +152,14 @@ export default function DeviceRegistry({active,api,onOperation}:Props) {
       api={api} onClose={() => setSelectedDevice(null)}/>}
     {error&&<p role="alert" className="error"><AlertTriangle size={18}/>{error}</p>}
     {pending&&<div className="banner device-recovery"><span><AlertTriangle size={18}/>An earlier device request may need reconciliation.</span><button className="secondary compact" disabled={busy} onClick={()=>void run(()=>perform(JSON.parse(pending)))}><RefreshCw size={15}/>Recover</button></div>}
-    <div className="device-toolbar"><form onSubmit={event=>{event.preventDefault();void run(()=>load({search,status}));}}><div className="search-field"><Search size={17}/><input aria-label="Search Device ID" placeholder="Search device ID" value={search} onChange={event=>setSearch(event.target.value)}/></div><select aria-label="Device status" value={status} onChange={event=>setStatus(event.target.value)}><option value="">All states</option><option value="available">Available</option><option value="assigned">Assigned</option><option value="inactive">Inactive</option></select><button className="secondary" disabled={busy}><Search size={16}/>Search</button></form><button disabled={busy} onClick={()=>setShowRegister(value=>!value)}>{showRegister?<><X size={17}/>Cancel</>:<><Plus size={17}/>Register device</>}</button></div>
-    {showRegister&&<form className="panel register-device" onSubmit={event=>void run(()=>register(event))}><div className="section-title"><span className="device-icon"><ShieldCheck size={19}/></span><div><h2>Register device</h2><small>Add a dedicated ESP32 authentication account.</small></div></div><div><label>Device ID<input required maxLength={128} placeholder="CRAY-…" value={deviceId} onChange={event=>setDeviceId(event.target.value.toUpperCase())}/></label><label>Firebase Auth UID<input required maxLength={128} placeholder="Dedicated ESP32 account UID" value={authUid} onChange={event=>setAuthUid(event.target.value)}/></label><button disabled={busy}>{busy?'Registering…':'Register device'}<Plus size={17}/></button></div></form>}
-    {(appliedSearch || appliedStatus) && (
-      <div className="device-filter-summary">
-        <p>
-          {appliedSearch && <>Device ID <b>{appliedSearch}</b></>}
-          {appliedSearch && appliedStatus && <span aria-hidden="true"> · </span>}
-          {appliedStatus && <>Status <b className="device-filter-status">{appliedStatus}</b></>}
-        </p>
-        <button type="button" className="secondary compact" disabled={busy} onClick={() => void run(showAllDevices)}>
-          Show all devices
-        </button>
-      </div>
-    )}
+    <div className="device-toolbar"><form onSubmit={event=>{event.preventDefault();void run(()=>load({search,status}));}}><div className="search-field"><Search size={17}/><input aria-label="Search Device ID" placeholder="Search device ID" value={search} onChange={event=>setSearch(event.target.value)}/></div><select aria-label="Device status" value={status} onChange={event=>setStatus(event.target.value)}><option value="">All states</option><option value="available">Available</option><option value="assigned">Assigned</option><option value="inactive">Inactive</option></select><button className="secondary" disabled={busy}><Search size={16}/>Search</button></form><button type="button" disabled={busy} onClick={()=>setShowCreation(true)} aria-haspopup="dialog"><Plus size={17}/>Create device</button></div>
     <div className="device-grid">
       {devices.map(device => (
         <article className="device-card" key={device.deviceId}>
           <div className="device-card-head">
             <span className="device-icon"><Cpu size={20}/></span>
-            <div><h2>{device.deviceId}</h2><small>{device.authConfigured ? 'Authentication configured' : 'Authentication missing'}</small></div>
-            <span className={`status ${device.status === 'available' || device.status === 'assigned' ? 'enabled' : 'disabled'}`}><i/>{device.status || 'Unknown'}</span>
+            <div><h2>{device.deviceId}</h2><small>{device.status === 'provisioning' ? 'Sign-in setup pending' : device.authConfigured ? 'Authentication configured' : 'Authentication missing'}</small></div>
+            <span className={`status ${device.status === 'available' || device.status === 'assigned' ? 'enabled' : 'disabled'}`}><i/>{device.status === 'provisioning' ? 'Setting up' : device.status || 'Unknown'}</span>
           </div>
           <dl>
             <dt>Farm</dt><dd>{device.farmName || device.farmId || 'Not assigned'}</dd>
@@ -183,13 +167,13 @@ export default function DeviceRegistry({active,api,onOperation}:Props) {
             <dt>Registered</dt><dd>{device.registeredAt ? new Date(device.registeredAt).toLocaleString() : 'Unknown'}</dd>
           </dl>
           <div className="device-actions">
-            <button className="secondary compact" onClick={() => setSelectedDevice(device)}
+            <button className="secondary compact" disabled={device.status === 'provisioning'} onClick={() => setSelectedDevice(device)}
               aria-label={`Device info for ${device.deviceId}`}><QrCode size={16}/>Device info</button>
             {device.active === true && (device.status === 'available' || device.status === 'assigned') &&
               <button className="secondary compact" disabled={busy} onClick={() => setAssignmentDevice(device)}>
                 {device.status === 'assigned' ? 'Change assignment' : 'Assign to pond'}
               </button>}
-            {device.status !== 'assigned' && (
+            {device.status !== 'assigned' && device.status !== 'provisioning' && (
               <button className="secondary compact" disabled={busy}
                 onClick={() => void run(() => toggle(device, device.active === false ? 'activate' : 'deactivate'))}>
                 {device.active === false ? <ToggleRight size={16}/> : <ToggleLeft size={16}/>}

@@ -110,6 +110,7 @@ export function nextDeviceRecord(current: any, kind: DeviceAction, input: {devic
       lastAdminOperationId:input.operationId,lastAdminAction:kind,lastAdminUpdatedAt:input.now};
   }
   if(current === null || current === undefined) throw new Error('not-found');
+  if(current.status === 'provisioning') throw new Error('failed-precondition');
   if((typeof current.farmId === 'string' && current.farmId) || (typeof current.pondId === 'string' && current.pondId) || current.status === 'assigned') {
     throw new Error('failed-precondition');
   }

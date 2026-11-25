@@ -1,11 +1,79 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import type {Auth} from 'firebase-admin/auth';
 import type {Database} from 'firebase-admin/database';
 import {requireAdmin, key, action, deviceAction, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, sameOperation} from './core';
 import {execute, Effects} from './workflow';
 import {applyAssignment} from './deviceAssignment';
 import {isInactiveAccount, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
 import {filterHumanAccounts, readDeviceRegistryPage} from './deviceRegistry';
+import {createDevice} from './deviceProvisioning';
+
+test('device creation resumes after interruption with the same ID, sign-in and credentials', async () => {
+  const data = new Map<string, any>();
+  let failMapping = true;
+  const ref = (path: string) => ({
+    child: (child: string) => ref(`${path}/${child}`),
+    get: async () => ({exists: () => data.has(path)}),
+    transaction: async (change: (value: any) => any) => {
+      if (path.startsWith('deviceUsers/') && failMapping) {
+        failMapping = false;
+        throw new Error('connection interrupted');
+      }
+      const updated = change(data.get(path) ?? null);
+      if (updated === null) data.delete(path);
+      else if (updated !== undefined) data.set(path, updated);
+      return {committed:updated !== undefined, snapshot:{val:() => data.get(path) ?? null}};
+    },
+    update: async (updates: Record<string, any>) => {
+      for (const [key, value] of Object.entries(updates)) {
+        const target = `${path}/${key}`;
+        data.set(target, value);
+        if (key.endsWith('/completedAt')) {
+          const operation = target.slice(0, -'/completedAt'.length);
+          data.set(operation, {...data.get(operation), completedAt:value});
+        }
+      }
+    },
+  });
+  const db = {ref} as unknown as Database;
+  const identities = new Map<string, {uid:string; email:string; disabled:boolean}>();
+  const auth = {
+    async getUser(uid: string) {
+      const identity = identities.get(uid);
+      if (!identity) throw Object.assign(new Error('missing'), {code:'auth/user-not-found'});
+      return identity;
+    },
+    async createUser({uid, email, disabled}: {uid:string; email:string; disabled:boolean}) {
+      assert(!identities.has(uid));
+      const identity = {uid, email, disabled};
+      identities.set(uid, identity);
+      return identity;
+    },
+    async updateUser(uid: string, update: {disabled:boolean}) {
+      const identity = {...identities.get(uid)!, ...update};
+      identities.set(uid, identity);
+      return identity;
+    },
+  } as unknown as Auth;
+  const request = {operationId:'12345678-0000-4000-8000-000000000000', proof:'a'.repeat(64)};
+
+  await assert.rejects(createDevice(db, auth, request, 'admin'), /Retry from this window/);
+  assert.equal(identities.size, 1);
+  const [uid, pendingIdentity] = identities.entries().next().value!;
+  assert.equal(pendingIdentity.disabled, true);
+  const result = await createDevice(db, auth, request, 'admin');
+  assert.match(result.deviceId, /^CRAY-(?:[A-F0-9]{4}-){3}[A-F0-9]{4}$/);
+  assert.equal(data.get(`devices/${result.deviceId}`).status, 'available');
+  assert.equal(data.get(`deviceUsers/${uid}/deviceId`), result.deviceId);
+  assert.equal(identities.get(uid)?.disabled, false);
+  assert.deepEqual(await createDevice(db, auth, request, 'admin'), result);
+  assert.equal(identities.size, 1);
+  assert.equal([...data.keys()].filter(key => key.startsWith('devices/')).length, 1);
+  assert(!JSON.stringify([...data.values()]).includes(result.password));
+  assert(!JSON.stringify([...data.values()]).includes(request.proof));
+  await assert.rejects(createDevice(db, auth, request, 'different-admin'), /different setup/);
+});
 
 test('device registry reads past the first device and keeps device sign-ins out of Users', async () => {
   const devices = [
