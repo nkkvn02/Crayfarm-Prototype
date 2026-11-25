@@ -2,7 +2,7 @@ import {initializeApp} from 'firebase-admin/app';
 import {getAuth} from 'firebase-admin/auth';
 import {getDatabase} from 'firebase-admin/database';
 import {onCall, HttpsError} from 'firebase-functions/v2/https';
-import {action, deviceAction, key, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, requireAdmin, sameOperation} from './core';
+import {action, deviceAction, key, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, requireAdmin, sameOperation} from './core';
 import {execute} from './workflow';
 import {readDeviceInfo, saveDeviceInfo} from './deviceInfo';
 import {listAssignmentPonds, updateDeviceAssignment} from './deviceAssignment';
@@ -10,6 +10,7 @@ import {countOverviewInventory} from './overviewInventory';
 import {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
 import {filterHumanAccounts, readDeviceRegistryPage} from './deviceRegistry';
 import {createDevice, DeviceProvisioningError} from './deviceProvisioning';
+import {changeDeviceRecord, deleteRegisteredDevice, resumeMatchingDeviceOperation, type DeviceOperationResult} from './deviceLifecycle';
 const usingEmulators=process.env.FUNCTIONS_EMULATOR==='true';
 const app = initializeApp({databaseURL:usingEmulators?'https://demo-crayfarm-default-rtdb.firebaseio.com':'https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app'});
 const auth = getAuth(), db = getDatabase();
@@ -270,7 +271,8 @@ export const reconcileOperation = endpoint(async (data,actor)=>{
   if(!op)throw new HttpsError('not-found','Operation not found.');
   return runMutation(op,op.actorUid,actor);
 });
-async function runDeviceMutation(data:any, actor:string, reconciler?:string) {
+async function runDeviceMutation(data:any, actor:string, reconciler?:string, resumeBlocked = true): Promise<DeviceOperationResult> {
+  if (data.action === 'delete') return deleteRegisteredDevice(db, data, actor);
   const deviceId=key(String(data.deviceId??'').toUpperCase()),operationId=key(data.operationId),kind=deviceAction(data.action);
   const authUid=kind==='register'?key(data.authUid):undefined;
   if(authUid) {
@@ -288,18 +290,31 @@ async function runDeviceMutation(data:any, actor:string, reconciler?:string) {
   if(operation.actorUid!==proposed.actorUid||operation.deviceId!==deviceId||operation.action!==kind||(kind==='register'&&operation.authUid!==authUid)) {
     throw new HttpsError('already-exists','Operation ID belongs to a different request.');
   }
-  const result=()=>({operationId:operation.operationId,deviceId:operation.deviceId,action:operation.action,status:operation.status,kind:'device'});
-  if(operation.status==='succeeded')return result();
+  const result=():DeviceOperationResult=>({operationId:operation.operationId,deviceId:operation.deviceId,action:operation.action,status:operation.resolvedStatus??operation.status,kind:'device', ...(operation.message && {message:operation.message})});
+  if(['succeeded','failed','superseded'].includes(operation.status))return result();
   const lock=control.child(`deviceLocks/${deviceId}`),acquired=await lock.transaction(old=>old===null||old===operationId?operationId:undefined);
-  if(!acquired.committed)throw new HttpsError('failed-precondition','Reconcile the existing operation for this device first.');
+  if(!acquired.committed) {
+    const resumed = resumeBlocked ? await resumeMatchingDeviceOperation(control, acquired.snapshot.val(), operation,
+      previous => runDeviceMutation(previous, actor, reconciler, false)) : undefined;
+    if (resumed) return resumed;
+    throw new HttpsError('failed-precondition','Reconcile the existing operation for this device first.');
+  }
   const lease=control.child(`deviceLeases/${operationId}`),now=Date.now(),leased=await lease.transaction(old=>!old||old<now?now+120000:undefined);
   if(!leased.committed)return {...result(),status:'in_progress'};
   try {
-    operation=(await operationRef.get()).val();if(operation.status==='succeeded'){await lock.transaction(old=>old===operationId?null:undefined);return result();}
+    operation=(await operationRef.get()).val();if(['succeeded','failed','superseded'].includes(operation.status)){await lock.transaction(old=>old===operationId?null:old);return result();}
     await operationRef.update({status:'in_progress',updatedAt:Date.now()});
-    let mutationError: any;
-    const deviceRef=db.ref(`devices/${deviceId}`),changed=await deviceRef.transaction(current=>{try{return nextDeviceRecord(current,kind,{deviceId,authUid,actor,operationId,now:Date.now()});}catch(error){mutationError=error;return undefined;}});
-    if(!changed.committed)throw mutationError??new Error('failed-precondition');
+    const message = await changeDeviceRecord(db, kind, {deviceId,authUid,actor,operationId,now:Date.now()});
+    if (message) {
+      await control.update({
+        [`deviceOperations/${operationId}/status`]:'failed',
+        [`deviceOperations/${operationId}/updatedAt`]:Date.now(),
+        [`deviceOperations/${operationId}/message`]:message,
+        [`deviceLocks/${deviceId}`]:null,
+      });
+      operation={...operation,status:'failed',message};
+      return result();
+    }
     const finishedAt=Date.now(),update:Record<string,unknown>={};
     update[`deviceAudit/${operationId}`]={operationId,actorUid:actor,deviceId,action:kind,outcome:'succeeded',timestamp:finishedAt,...(reconciler?{reconciledBy:reconciler}:{})};
     update[`deviceOperations/${operationId}/status`]='succeeded';update[`deviceOperations/${operationId}/updatedAt`]=finishedAt;update[`deviceLocks/${deviceId}`]=null;

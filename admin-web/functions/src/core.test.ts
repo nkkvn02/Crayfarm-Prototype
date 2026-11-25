@@ -1,13 +1,73 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import type {Auth} from 'firebase-admin/auth';
-import type {Database} from 'firebase-admin/database';
+import type {Database, Reference} from 'firebase-admin/database';
 import {requireAdmin, key, action, deviceAction, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, sameOperation} from './core';
 import {execute, Effects} from './workflow';
 import {applyAssignment} from './deviceAssignment';
 import {isInactiveAccount, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
 import {filterHumanAccounts, readDeviceRegistryPage} from './deviceRegistry';
 import {createDevice} from './deviceProvisioning';
+import {applyDeviceDeletion, changeDeviceRecord, resumeMatchingDeviceOperation} from './deviceLifecycle';
+
+test('deactivation waits for the real device when Firebase starts with an empty cache', async () => {
+  const stored = {active:true, status:'available', deviceId:'CRAY-1'};
+  const db = {ref: () => ({
+    transaction: async (apply: (value: unknown) => any) => {
+      assert.equal(apply(null), null);
+      const updated = apply(stored);
+      assert.equal(updated.status, 'inactive');
+      assert.equal(updated.active, false);
+      return {committed:true, snapshot:{exists:() => true}};
+    },
+  })} as unknown as Database;
+  assert.equal(await changeDeviceRecord(db, 'deactivate', {deviceId:'CRAY-1', actor:'admin', operationId:'op', now:1}), undefined);
+});
+
+test('only inactive unlinked devices can be deleted, and replay preserves the outcome', () => {
+  const device = {deviceId:'CRAY-1', active:true, status:'available', authUid:'device-login'};
+  const pond = {deviceId:'CRAY-1', history:{sample:{temperature:24}}};
+  const root = {
+    devices:{'CRAY-1':device, 'CRAY-2':{}}, farms:{farm:{ponds:{pond}}},
+    deviceUsers:{'device-login':{deviceId:'CRAY-1'}}, _crayfarmAdmin:{deviceInfo:{'CRAY-1':{displayName:'device'}}},
+  };
+  const request = {deviceId:'CRAY-1', operationId:'delete-op'};
+  assert.match(applyDeviceDeletion(root, request, 'admin', 20) ?? '', /deactivate/);
+  device.active = false;
+  device.status = 'inactive';
+  assert.match(applyDeviceDeletion(root, request, 'admin', 20) ?? '', /pond still references/);
+  pond.deviceId = '';
+  assert.equal(applyDeviceDeletion(root, request, 'admin', 20), undefined);
+  assert.deepEqual(Object.keys(root.devices), ['CRAY-2']);
+  assert.deepEqual(root.deviceUsers, {});
+  assert.deepEqual(root._crayfarmAdmin.deviceInfo, {});
+  assert.deepEqual(pond.history, {sample:{temperature:24}});
+  const control = (root as Record<string, any>)._crayfarmAdmin;
+  assert.equal(control.retiredDeviceUsers['device-login'].deviceId, 'CRAY-1');
+  assert.equal(control.deviceAudit['delete-op'].action, 'delete');
+  assert.equal(applyDeviceDeletion(root, request, 'admin', 22), undefined);
+  assert.match(applyDeviceDeletion(root, request, 'other-admin', 22) ?? '', /already been used/);
+});
+
+test('a repeat deactivation resumes the earlier matching operation', async () => {
+  const first = {operationId:'first', deviceId:'CRAY-1', action:'deactivate', actorUid:'admin'};
+  const second = {...first, operationId:'second'};
+  const control = {
+    child: (path: string) => ({
+      get: async () => ({val: () => path === 'deviceOperations/first' ? first : null}),
+      update: async (data: Record<string, unknown>) => {
+        assert.equal(path, 'deviceOperations/second');
+        assert.equal(data.status, 'superseded');
+        assert.equal(data.resolvedStatus, 'succeeded');
+      },
+    }),
+  } as unknown as Reference;
+  const result = await resumeMatchingDeviceOperation(control, 'first', second, async previous => {
+    assert.equal(previous.operationId, 'first');
+    return {...first, kind:'device', status:'succeeded'};
+  });
+  assert.equal(result?.status, 'succeeded');
+});
 
 test('device creation resumes after interruption with the same ID, sign-in and credentials', async () => {
   const data = new Map<string, any>();

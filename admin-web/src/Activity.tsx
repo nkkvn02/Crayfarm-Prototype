@@ -1,14 +1,16 @@
 import {useMemo, useState} from 'react';
-import {AlertTriangle, Check, CircleOff, Cpu, Plus, RefreshCw, RotateCcw, ShieldOff, ToggleLeft, ToggleRight} from 'lucide-react';
+import {AlertTriangle, Check, CircleOff, Cpu, Plus, RefreshCw, RotateCcw, ShieldOff, ToggleLeft, ToggleRight, Trash2} from 'lucide-react';
 
 type Props={operations:any[];busy:boolean;onRefresh:()=>Promise<void>;onRecover:(kind:'account'|'device')=>Promise<void>;onReconcile:(operation:any)=>Promise<void>};
-const labels:Record<string,string>={disable:'Account disabled',enable:'Account re-enabled',revokeAdmin:'Admin access revoked',register:'Device registered',activate:'Device activated',deactivate:'Device deactivated',assign:'Device assigned',move:'Device moved',unassign:'Device unassigned'};
-const icons:Record<string,typeof Check>={disable:CircleOff,enable:Check,revokeAdmin:ShieldOff,register:Plus,activate:ToggleRight,deactivate:ToggleLeft,assign:Cpu,move:Cpu,unassign:Cpu};
+const labels:Record<string,string>={disable:'Account disabled',enable:'Account re-enabled',revokeAdmin:'Admin access revoked',register:'Device registered',activate:'Device activated',deactivate:'Device deactivated',delete:'Device deleted',assign:'Device assigned',move:'Device moved',unassign:'Device unassigned'};
+const icons:Record<string,typeof Check>={disable:CircleOff,enable:Check,revokeAdmin:ShieldOff,register:Plus,activate:ToggleRight,deactivate:ToggleLeft,delete:Trash2,assign:Cpu,move:Cpu,unassign:Cpu};
+const canReconcile = (status:string) => !['succeeded','failed','superseded'].includes(status);
 
 export default function Activity({operations,busy,onRefresh,onRecover,onReconcile}:Props){
  const [filter,setFilter]=useState('all');
  const pendingAccount=!!sessionStorage.getItem('crayfarm-pending'),pendingDevice=!!sessionStorage.getItem('crayfarm-device-pending');
- const visible=useMemo(()=>operations.slice().reverse().filter(operation=>filter==='all'||filter===operation.kind||(filter==='attention'&&operation.status!=='succeeded')),[operations,filter]);
+ const visible=useMemo(()=>operations.slice().reverse().filter(operation=>operation.status!=='superseded'
+   && (filter==='all'||filter===operation.kind||(filter==='attention'&&canReconcile(operation.status)))),[operations,filter]);
  const filters=[['all','All'],['account','Accounts'],['device','Devices'],['attention','Needs attention']];
  return <section className="activity-view">
   <div className="activity-toolbar"><div className="activity-filters" aria-label="Activity filters">{filters.map(([value,label])=><button key={value} className={filter===value?'filter-chip active':'filter-chip'} onClick={()=>setFilter(value)}>{label}</button>)}</div><div className="activity-actions"><button className="secondary compact" disabled={busy} onClick={()=>void onRefresh()}><RefreshCw size={15}/>Refresh</button>{pendingAccount&&<button className="secondary compact" disabled={busy} onClick={()=>void onRecover('account')}><RotateCcw size={15}/>Recover account</button>}{pendingDevice&&<button className="secondary compact" disabled={busy} onClick={()=>void onRecover('device')}><Cpu size={15}/>Recover device</button>}</div></div>
@@ -16,7 +18,7 @@ export default function Activity({operations,busy,onRefresh,onRecover,onReconcil
     {visible.map(operation => {
       const successful = operation.status === 'succeeded';
       const statusTone = successful ? 'success' : 'attention';
-      const iconTone = operation.action === 'disable' ? 'danger-state' : statusTone;
+      const iconTone = ['disable','delete'].includes(operation.action) ? 'danger-state' : statusTone;
       const target = operation.deviceId || operation.targetUid;
       const Icon = icons[operation.action] || AlertTriangle;
       const createdAt = new Date(operation.createdAt);
@@ -33,7 +35,7 @@ export default function Activity({operations,busy,onRefresh,onRecover,onReconcil
             <span className={`audit-status ${statusTone}`}><i/>{successful ? 'Completed' : operation.status.replaceAll('_', ' ')}</span>
             <time dateTime={createdAt.toISOString()}>{new Intl.DateTimeFormat(undefined, {dateStyle: 'medium', timeStyle: 'short'}).format(createdAt)}</time>
           </div>
-          {!successful && <button className="secondary compact audit-reconcile" disabled={busy} onClick={() => void onReconcile(operation)}><RotateCcw size={15}/>Reconcile</button>}
+          {canReconcile(operation.status) && <button className="secondary compact audit-reconcile" disabled={busy} onClick={() => void onReconcile(operation)}><RotateCcw size={15}/>Reconcile</button>}
         </article>
       );
     })}

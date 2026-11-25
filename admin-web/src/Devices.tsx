@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState, type FormEvent} from 'react';
-import {AlertTriangle, Cpu, Plus, QrCode, RefreshCw, Search, ToggleLeft, ToggleRight, X} from 'lucide-react';
+import {AlertTriangle, Cpu, Plus, QrCode, RefreshCw, Search, ToggleLeft, ToggleRight, Trash2, X} from 'lucide-react';
 import {QRCodeSVG} from 'qrcode.react';
 import DeviceAssignment from './DeviceAssignment';
 import DeviceCreation from './DeviceCreation';
@@ -8,7 +8,7 @@ type Device = {
   deviceId:string;active:boolean|null;status:string|null;farmId:string|null;pondId:string|null;
   linkedAt:number|null;registeredAt:number|null;authConfigured:boolean;farmName:string|null;pondName:string|null;
 };
-type Props = {active:boolean;actorUid:string;apiKey:string;api:(name:string,data?:unknown)=>Promise<any>;onOperation:(message:string, registered?:boolean)=>Promise<void>};
+type Props = {active:boolean;revision:number;actorUid:string;apiKey:string;api:(name:string,data?:unknown)=>Promise<any>;onOperation:(message:string, registryChanged?:boolean)=>Promise<void>};
 type DeviceInfo = {displayName:string;maintenanceNotes:string};
 type DeviceFilters = {search:string;status:string};
 const defaultDeviceFilters: DeviceFilters = {search:'',status:''};
@@ -96,9 +96,10 @@ function DeviceDetails({device, api, onClose}: {device:Device;api:Props['api'];o
   );
 }
 
-export default function DeviceRegistry({active,actorUid,apiKey,api,onOperation}:Props) {
+export default function DeviceRegistry({active,revision,actorUid,apiKey,api,onOperation}:Props) {
   const [page,setPage]=useState<{devices:Device[];filters:DeviceFilters;cursor:string|null;next:string|null}|null>(null);
   const initialLoad = useRef(false);
+  const loadedRevision = useRef(revision);
   const devices = page?.devices ?? [];
   const [search,setSearch]=useState(''),[status,setStatus]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const [showCreation,setShowCreation]=useState(false);
@@ -113,24 +114,38 @@ export default function DeviceRegistry({active,actorUid,apiKey,api,onOperation}:
   useEffect(() => {
     if (!active || page || initialLoad.current) return;
     initialLoad.current = true;
+    loadedRevision.current = revision;
     void run(async () => {
       try { await load(defaultDeviceFilters); }
       finally { initialLoad.current = false; }
     });
-  }, [active, page]);
+  }, [active, page, revision]);
+  useEffect(() => {
+    if (!active || !page || loadedRevision.current === revision) return;
+    loadedRevision.current = revision;
+    void run(() => load(page.filters, page.cursor));
+  }, [active, page, revision]);
   const refresh = () => load(page?.filters ?? defaultDeviceFilters, page?.cursor);
   async function perform(request:any) {
     sessionStorage.setItem('crayfarm-device-pending', JSON.stringify(request));
     const result = await api(request.actorUid ? 'reconcileDeviceOperation' : 'mutateDevice',
       request.actorUid ? {operationId:request.operationId} : request);
     const succeeded = result.status === 'succeeded';
-    if (succeeded) sessionStorage.removeItem('crayfarm-device-pending');
+    if (succeeded || result.status === 'failed') sessionStorage.removeItem('crayfarm-device-pending');
+    if (result.status === 'failed') throw new Error(result.message || 'The device could not be updated.');
+    const labels:Record<string,string> = {register:'registered', activate:'activated', deactivate:'deactivated', delete:'deleted'};
+    const message = succeeded ? `Device ${result.deviceId} ${labels[result.action]}.` : `Device ${result.deviceId}: request in progress.`;
     await Promise.all([
-      onOperation(`Device ${result.deviceId}: ${result.status}`, succeeded && result.action === 'register'),
+      onOperation(message, succeeded && ['register','delete'].includes(result.action)),
       refresh(),
     ]);
   }
-  async function toggle(device:Device,action:'activate'|'deactivate'){if(!window.confirm(`${action==='activate'?'Activate':'Deactivate'} ${device.deviceId}?`))return;await perform({deviceId:device.deviceId,action,operationId:`${Date.now()}_${crypto.randomUUID()}`});}
+  async function changeDevice(device:Device, action:'activate'|'deactivate'|'delete') {
+    const label = {activate:'Activate', deactivate:'Deactivate', delete:'Delete'}[action];
+    const message = `${label} ${device.deviceId}?` + (action === 'delete' ? ' This permanently removes its registration and device access.' : '');
+    if (!window.confirm(message)) return;
+    await perform({deviceId:device.deviceId,action,operationId:`${Date.now()}_${crypto.randomUUID()}`});
+  }
   return <>
     <DeviceCreation open={showCreation} actorUid={actorUid} apiKey={apiKey} api={api} onClose={() => setShowCreation(false)}
       onCreated={deviceId => void run(async () => {
@@ -174,10 +189,16 @@ export default function DeviceRegistry({active,actorUid,apiKey,api,onOperation}:
                 {device.status === 'assigned' ? 'Change assignment' : 'Assign to pond'}
               </button>}
             {device.status !== 'assigned' && device.status !== 'provisioning' && (
-              <button className="secondary compact" disabled={busy}
-                onClick={() => void run(() => toggle(device, device.active === false ? 'activate' : 'deactivate'))}>
+              <button className="secondary compact" disabled={busy || !!pending}
+                onClick={() => void run(() => changeDevice(device, device.active === false ? 'activate' : 'deactivate'))}>
                 {device.active === false ? <ToggleRight size={16}/> : <ToggleLeft size={16}/>}
                 {device.active === false ? 'Activate' : 'Deactivate'}
+              </button>
+            )}
+            {device.status === 'inactive' && device.active === false && !device.farmId && !device.pondId && (
+              <button className="secondary compact device-delete" disabled={busy || !!pending}
+                onClick={() => void run(() => changeDevice(device, 'delete'))}>
+                <Trash2 size={16} aria-hidden="true"/>Delete device
               </button>
             )}
           </div>

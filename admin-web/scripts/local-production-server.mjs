@@ -8,13 +8,14 @@ import {initializeServerAdmin} from './firebase-server-admin.mjs';
 const functionsRequire = createRequire(new URL('../functions/package.json', import.meta.url));
 const {getAuth} = functionsRequire('firebase-admin/auth');
 const {getDatabase} = functionsRequire('firebase-admin/database');
-const {action, deviceAction, key, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, sameOperation} = functionsRequire('./lib/core.js');
+const {action, deviceAction, key, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, sameOperation} = functionsRequire('./lib/core.js');
 const {execute} = functionsRequire('./lib/workflow.js');
 const {readDeviceInfo, saveDeviceInfo} = functionsRequire('./lib/deviceInfo.js');
 const {listAssignmentPonds, updateDeviceAssignment} = functionsRequire('./lib/deviceAssignment.js');
 const {countOverviewInventory} = functionsRequire('./lib/overviewInventory.js');
 const {filterHumanAccounts, readDeviceRegistryPage} = functionsRequire('./lib/deviceRegistry.js');
 const {createDevice} = functionsRequire('./lib/deviceProvisioning.js');
+const {changeDeviceRecord, deleteRegisteredDevice, resumeMatchingDeviceOperation} = functionsRequire('./lib/deviceLifecycle.js');
 const {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} = functionsRequire('./lib/inactiveAccounts.js');
 const deploymentMode = process.env.CRAYFARM_DEPLOYMENT_MODE?.trim().toLowerCase();
 const hostedMode = deploymentMode === 'hostinger' || deploymentMode === 'render';
@@ -140,24 +141,42 @@ async function deviceView(deviceId,value) {
   return {...device,farmName:typeof farmName==='string'?farmName:null,pondName:typeof pondName==='string'?pondName:null};
 }
 
-async function runDeviceMutation(data,actor,reconciler) {
+async function runDeviceMutation(data,actor,reconciler,resumeBlocked = true) {
+  if (data.action === 'delete') {
+    try { return await deleteRegisteredDevice(db, data, actor); }
+    catch (error) { throw deviceFailure(error); }
+  }
   let deviceId,operationId,kind,authUid;
   try{deviceId=key(String(data.deviceId??'').toUpperCase());operationId=key(data.operationId);kind=deviceAction(data.action);authUid=kind==='register'?key(data.authUid):undefined;}catch(error){throw deviceFailure(error);}
   if(authUid){let identity;try{identity=await auth.getUser(authUid);}catch(error){if(error.code==='auth/user-not-found')throw Object.assign(new Error('The Firebase Authentication UID does not exist.'),{status:412});throw error;}if(identity.disabled)throw Object.assign(new Error('The Firebase Authentication account is disabled.'),{status:412});const registry=await db.ref('devices').orderByKey().limitToFirst(1001).get();if(registry.numChildren()>1000)throw Object.assign(new Error('Device identity uniqueness could not be verified within the safety limit.'),{status:429});let duplicate=null;registry.forEach(child=>{if(child.key!==deviceId&&child.child('authUid').val()===authUid)duplicate=child.key;});if(duplicate)throw Object.assign(new Error('This Firebase Authentication UID is already registered to another device.'),{status:409});}
   const operationRef=control.child(`deviceOperations/${operationId}`),proposed={operationId,actorUid:actor,deviceId,action:kind,...(authUid?{authUid}:{}),createdAt:Date.now(),updatedAt:Date.now(),status:'pending'};
   const created=await operationRef.transaction(old=>old??proposed);let operation=created.snapshot.val();
   if(operation.actorUid!==actor||operation.deviceId!==deviceId||operation.action!==kind||(kind==='register'&&operation.authUid!==authUid))throw Object.assign(new Error('Operation ID belongs to a different request.'),{status:409});
-  const result=()=>({operationId:operation.operationId,deviceId:operation.deviceId,action:operation.action,status:operation.status,kind:'device'});
-  if(operation.status==='succeeded')return result();
+  const result=()=>({operationId:operation.operationId,deviceId:operation.deviceId,action:operation.action,status:operation.resolvedStatus??operation.status,kind:'device', ...(operation.message && {message:operation.message})});
+  if(['succeeded','failed','superseded'].includes(operation.status))return result();
   const lock=control.child(`deviceLocks/${deviceId}`),acquired=await lock.transaction(old=>old===null||old===operationId?operationId:undefined);
-  if(!acquired.committed)throw Object.assign(new Error('Reconcile the existing operation for this device first.'),{status:412});
+  if(!acquired.committed) {
+    const resumed = resumeBlocked ? await resumeMatchingDeviceOperation(control, acquired.snapshot.val(), operation,
+      previous => runDeviceMutation(previous, actor, reconciler, false)) : undefined;
+    if (resumed) return resumed;
+    throw Object.assign(new Error('Reconcile the existing operation for this device first.'),{status:412});
+  }
   const lease=control.child(`deviceLeases/${operationId}`),now=Date.now(),leased=await lease.transaction(old=>!old||old<now?now+120000:undefined);
   if(!leased.committed)return {...result(),status:'in_progress'};
   try{
-    operation=(await operationRef.get()).val();if(operation.status==='succeeded'){await lock.transaction(old=>old===operationId?null:undefined);return result();}
-    await operationRef.update({status:'in_progress',updatedAt:Date.now()});let mutationError;
-    const changed=await db.ref(`devices/${deviceId}`).transaction(current=>{try{return nextDeviceRecord(current,kind,{deviceId,authUid,actor,operationId,now:Date.now()});}catch(error){mutationError=error;return undefined;}});
-    if(!changed.committed)throw deviceFailure(mutationError??new Error('failed-precondition'));
+    operation=(await operationRef.get()).val();if(['succeeded','failed','superseded'].includes(operation.status)){await lock.transaction(old=>old===operationId?null:old);return result();}
+    await operationRef.update({status:'in_progress',updatedAt:Date.now()});
+    const message = await changeDeviceRecord(db, kind, {deviceId,authUid,actor,operationId,now:Date.now()});
+    if (message) {
+      await control.update({
+        [`deviceOperations/${operationId}/status`]:'failed',
+        [`deviceOperations/${operationId}/updatedAt`]:Date.now(),
+        [`deviceOperations/${operationId}/message`]:message,
+        [`deviceLocks/${deviceId}`]:null,
+      });
+      operation={...operation,status:'failed',message};
+      return result();
+    }
     const finishedAt=Date.now(),update={};update[`deviceAudit/${operationId}`]={operationId,actorUid:actor,deviceId,action:kind,outcome:'succeeded',timestamp:finishedAt,...(reconciler?{reconciledBy:reconciler}:{})};update[`deviceOperations/${operationId}/status`]='succeeded';update[`deviceOperations/${operationId}/updatedAt`]=finishedAt;update[`deviceLocks/${deviceId}`]=null;await control.update(update);operation={...operation,status:'succeeded'};return result();
   }catch(error){await operationRef.update({status:'needs_reconciliation',updatedAt:Date.now(),errorCategory:'incomplete-or-uncertain'}).catch(()=>{});throw error;}finally{await lease.remove().catch(()=>{});}
 }

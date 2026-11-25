@@ -29,6 +29,10 @@ export async function filterHumanAccounts(db: Database, users: Array<ReturnType<
   } while (cursor && deviceIds.size < candidateIds.size);
 
   const unmatched = candidates.filter(user => !deviceIds.has(user.uid));
-  const legacyMappings = await Promise.all(unmatched.map(user => db.ref(`deviceUsers/${key(user.uid)}/deviceId`).get()));
-  return unmatched.filter((_, index) => !legacyMappings[index].exists());
+  const deviceAccounts = await Promise.all(unmatched.map(async user => {
+    const uid = key(user.uid);
+    const legacy = await db.ref(`deviceUsers/${uid}/deviceId`).get();
+    return legacy.exists() || (await db.ref(`_crayfarmAdmin/retiredDeviceUsers/${uid}/deviceId`).get()).exists();
+  }));
+  return unmatched.filter((_, index) => !deviceAccounts[index]);
 }
