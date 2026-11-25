@@ -104,6 +104,8 @@ export default function DeviceRegistry({active,api,onOperation}:Props) {
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [assignmentDevice, setAssignmentDevice] = useState<Device | null>(null);
   const pending=sessionStorage.getItem('crayfarm-device-pending');
+  const appliedSearch = page?.filters.search.trim();
+  const appliedStatus = page?.filters.status;
   async function run(task:()=>Promise<void>){setBusy(true);setError('');try{await task();}catch(reason:any){setError(reason.message||'Request failed.');}finally{setBusy(false);}}
   async function load(filters:DeviceFilters, cursor:string|null = null) {
     const result = await api('deviceDirectory', {cursor, search:filters.search.trim(), status:filters.status});
@@ -118,6 +120,11 @@ export default function DeviceRegistry({active,api,onOperation}:Props) {
     });
   }, [active, page]);
   const refresh = () => load(page?.filters ?? defaultDeviceFilters, page?.cursor);
+  async function showAllDevices() {
+    await load(defaultDeviceFilters);
+    setSearch('');
+    setStatus('');
+  }
   async function perform(request:any){sessionStorage.setItem('crayfarm-device-pending',JSON.stringify(request));const result=await api(request.actorUid?'reconcileDeviceOperation':'mutateDevice',request.actorUid?{operationId:request.operationId}:request);if(result.status==='succeeded')sessionStorage.removeItem('crayfarm-device-pending');await onOperation(`Device ${result.deviceId}: ${result.status}`);await refresh();}
   async function register(event:FormEvent){event.preventDefault();const request={deviceId:deviceId.trim().toUpperCase(),authUid:authUid.trim(),action:'register',operationId:`${Date.now()}_${crypto.randomUUID()}`};await perform(request);setDeviceId('');setAuthUid('');setShowRegister(false);}
   async function toggle(device:Device,action:'activate'|'deactivate'){if(!window.confirm(`${action==='activate'?'Activate':'Deactivate'} ${device.deviceId}?`))return;await perform({deviceId:device.deviceId,action,operationId:`${Date.now()}_${crypto.randomUUID()}`});}
@@ -140,6 +147,18 @@ export default function DeviceRegistry({active,api,onOperation}:Props) {
     {pending&&<div className="banner device-recovery"><span><AlertTriangle size={18}/>An earlier device request may need reconciliation.</span><button className="secondary compact" disabled={busy} onClick={()=>void run(()=>perform(JSON.parse(pending)))}><RefreshCw size={15}/>Recover</button></div>}
     <div className="device-toolbar"><form onSubmit={event=>{event.preventDefault();void run(()=>load({search,status}));}}><div className="search-field"><Search size={17}/><input aria-label="Search Device ID" placeholder="Search device ID" value={search} onChange={event=>setSearch(event.target.value)}/></div><select aria-label="Device status" value={status} onChange={event=>setStatus(event.target.value)}><option value="">All states</option><option value="available">Available</option><option value="assigned">Assigned</option><option value="inactive">Inactive</option></select><button className="secondary" disabled={busy}><Search size={16}/>Search</button></form><button disabled={busy} onClick={()=>setShowRegister(value=>!value)}>{showRegister?<><X size={17}/>Cancel</>:<><Plus size={17}/>Register device</>}</button></div>
     {showRegister&&<form className="panel register-device" onSubmit={event=>void run(()=>register(event))}><div className="section-title"><span className="device-icon"><ShieldCheck size={19}/></span><div><h2>Register device</h2><small>Add a dedicated ESP32 authentication account.</small></div></div><div><label>Device ID<input required maxLength={128} placeholder="CRAY-…" value={deviceId} onChange={event=>setDeviceId(event.target.value.toUpperCase())}/></label><label>Firebase Auth UID<input required maxLength={128} placeholder="Dedicated ESP32 account UID" value={authUid} onChange={event=>setAuthUid(event.target.value)}/></label><button disabled={busy}>{busy?'Registering…':'Register device'}<Plus size={17}/></button></div></form>}
+    {(appliedSearch || appliedStatus) && (
+      <div className="device-filter-summary">
+        <p>
+          {appliedSearch && <>Device ID <b>{appliedSearch}</b></>}
+          {appliedSearch && appliedStatus && <span aria-hidden="true"> · </span>}
+          {appliedStatus && <>Status <b className="device-filter-status">{appliedStatus}</b></>}
+        </p>
+        <button type="button" className="secondary compact" disabled={busy} onClick={() => void run(showAllDevices)}>
+          Show all devices
+        </button>
+      </div>
+    )}
     <div className="device-grid">
       {devices.map(device => (
         <article className="device-card" key={device.deviceId}>
