@@ -7,7 +7,7 @@ type Device = {
   deviceId:string;active:boolean|null;status:string|null;farmId:string|null;pondId:string|null;
   linkedAt:number|null;registeredAt:number|null;authConfigured:boolean;farmName:string|null;pondName:string|null;
 };
-type Props = {active:boolean;api:(name:string,data?:unknown)=>Promise<any>;onOperation:(message:string)=>Promise<void>};
+type Props = {active:boolean;api:(name:string,data?:unknown)=>Promise<any>;onOperation:(message:string, registered?:boolean)=>Promise<void>};
 type DeviceInfo = {displayName:string;maintenanceNotes:string};
 type DeviceFilters = {search:string;status:string};
 const defaultDeviceFilters: DeviceFilters = {search:'',status:''};
@@ -125,7 +125,17 @@ export default function DeviceRegistry({active,api,onOperation}:Props) {
     setSearch('');
     setStatus('');
   }
-  async function perform(request:any){sessionStorage.setItem('crayfarm-device-pending',JSON.stringify(request));const result=await api(request.actorUid?'reconcileDeviceOperation':'mutateDevice',request.actorUid?{operationId:request.operationId}:request);if(result.status==='succeeded')sessionStorage.removeItem('crayfarm-device-pending');await onOperation(`Device ${result.deviceId}: ${result.status}`);await refresh();}
+  async function perform(request:any) {
+    sessionStorage.setItem('crayfarm-device-pending', JSON.stringify(request));
+    const result = await api(request.actorUid ? 'reconcileDeviceOperation' : 'mutateDevice',
+      request.actorUid ? {operationId:request.operationId} : request);
+    const succeeded = result.status === 'succeeded';
+    if (succeeded) sessionStorage.removeItem('crayfarm-device-pending');
+    await Promise.all([
+      onOperation(`Device ${result.deviceId}: ${result.status}`, succeeded && result.action === 'register'),
+      refresh(),
+    ]);
+  }
   async function register(event:FormEvent){event.preventDefault();const request={deviceId:deviceId.trim().toUpperCase(),authUid:authUid.trim(),action:'register',operationId:`${Date.now()}_${crypto.randomUUID()}`};await perform(request);setDeviceId('');setAuthUid('');setShowRegister(false);}
   async function toggle(device:Device,action:'activate'|'deactivate'){if(!window.confirm(`${action==='activate'?'Activate':'Deactivate'} ${device.deviceId}?`))return;await perform({deviceId:device.deviceId,action,operationId:`${Date.now()}_${crypto.randomUUID()}`});}
   return <>

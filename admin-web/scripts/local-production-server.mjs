@@ -13,6 +13,7 @@ const {execute} = functionsRequire('./lib/workflow.js');
 const {readDeviceInfo, saveDeviceInfo} = functionsRequire('./lib/deviceInfo.js');
 const {listAssignmentPonds, updateDeviceAssignment} = functionsRequire('./lib/deviceAssignment.js');
 const {countOverviewInventory} = functionsRequire('./lib/overviewInventory.js');
+const {filterHumanAccounts, readDeviceRegistryPage} = functionsRequire('./lib/deviceRegistry.js');
 const {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} = functionsRequire('./lib/inactiveAccounts.js');
 const deploymentMode = process.env.CRAYFARM_DEPLOYMENT_MODE?.trim().toLowerCase();
 const hostedMode = deploymentMode === 'hostinger' || deploymentMode === 'render';
@@ -43,7 +44,6 @@ async function profile(user) {
   const value = Object.fromEntries(fields.map((field,index) => [field,values[index].val()]));
   return publicUser(user, values.some(snapshot => snapshot.exists()) ? value : null);
 }
-async function serviceIdentity(user,projected){if(projected.websiteAdmin&&!projected.profileExists)return true;return (await db.ref(`deviceUsers/${key(user.uid)}/deviceId`).get()).exists();}
 
 
 async function farmScalars(farmId) {
@@ -175,8 +175,8 @@ const handlers = {
       try {
         const user = data.searchBy === 'email' ? await auth.getUserByEmail(data.search) : await auth.getUser(key(data.search));
         const projected = await profile(user);
-        if ((!inactive || matchesDirectoryFilters(projected, data.role, data.status)) && !await serviceIdentity(user,projected)) {
-          users.push(projected);
+        if (!inactive || matchesDirectoryFilters(projected, data.role, data.status)) {
+          users.push(...await filterHumanAccounts(db, [projected]));
         }
       } catch (error) { if (error.code !== 'auth/user-not-found') throw error; }
       if (includeArchived) users.push(...await archivedResignations(db, auth, data.search, data.searchBy));
@@ -185,7 +185,7 @@ const handlers = {
     if (data.role && !['admin','worker','unknown'].includes(data.role)) throw Object.assign(new Error('Invalid role.'), {status:400});
     if (data.status && !['enabled','disabled','inactive'].includes(data.status)) throw Object.assign(new Error('Invalid status.'), {status:400});
     const page = await auth.listUsers(25,cursor);
-    const projected=await Promise.all(page.users.map(profile)),users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(Boolean);
+    const users = await filterHumanAccounts(db, await Promise.all(page.users.map(profile)));
     const matching = users.filter(user => matchesDirectoryFilters(user, data.role, data.status));
     if (includeArchived && !cursor) matching.push(...await archivedResignations(db, auth));
     return {users:matching, cursor:page.pageToken ?? null};
@@ -200,7 +200,7 @@ const handlers = {
     const cursor = data.cursor ?? undefined;
     if (cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 2048)) throw Object.assign(new Error('Invalid cursor.'), {status:400});
     const page = await auth.listUsers(100,cursor);
-    const projected=await Promise.all(page.users.map(profile)),users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(Boolean);
+    const users = await filterHumanAccounts(db, await Promise.all(page.users.map(profile)));
     const archived = cursor ? [] : await archivedResignations(db, auth);
     return {...summarizeOverviewAccounts(users, archived.length), cursor:page.pageToken ?? null};
   },
@@ -215,7 +215,9 @@ const handlers = {
   deviceDirectory: async data => {
     if(data.status&&!['available','assigned','inactive'].includes(data.status))throw Object.assign(new Error('Invalid status.'),{status:400});
     if(data.search){if(typeof data.search!=='string')throw Object.assign(new Error('Invalid search.'),{status:400});const deviceId=key(data.search.toUpperCase());const snapshot=await db.ref(`devices/${deviceId}`).get();const device=snapshot.exists()?await deviceView(deviceId,snapshot.val()):null;return {devices:device&&(!data.status||device.status===data.status)?[device]:[],cursor:null};}
-    let query=db.ref('devices').orderByKey();if(data.cursor)query=query.startAfter(key(data.cursor));const snapshot=await query.limitToFirst(26).get(),entries=[];snapshot.forEach(child=>entries.push({id:child.key,value:child.val()}));const page=entries.slice(0,25),devices=await Promise.all(page.map(entry=>deviceView(entry.id,entry.value)));return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor:entries.length>25?page.at(-1).id:null};
+    const {entries, cursor} = await readDeviceRegistryPage(db, 25, data.cursor);
+    const devices = await Promise.all(entries.map(entry => deviceView(entry.id, entry.value)));
+    return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor};
   },
   deviceInfo: async data => {
     try { return await readDeviceInfo(db, data.deviceId); }

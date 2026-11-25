@@ -1,9 +1,40 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import type {Database} from 'firebase-admin/database';
 import {requireAdmin, key, action, deviceAction, nextDeviceRecord, publicDevice, publicFarm, publicFormerWorker, publicMember, publicPond, publicUser, sameOperation} from './core';
 import {execute, Effects} from './workflow';
 import {applyAssignment} from './deviceAssignment';
 import {isInactiveAccount, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
+import {filterHumanAccounts, readDeviceRegistryPage} from './deviceRegistry';
+
+test('device registry reads past the first device and keeps device sign-ins out of Users', async () => {
+  const devices = [
+    {key:'CRAY-1', val:() => ({authUid:'device-one'})},
+    {key:'CRAY-2', val:() => ({authUid:'device-two'})},
+  ];
+  const db = {
+    ref(path: string) {
+      if (path === 'devices') {
+        return {orderByKey: () => ({
+          limitToFirst: (limit: number) => ({
+            get: async () => ({
+              forEach: (visit: (entry: typeof devices[number]) => unknown) =>
+                devices.slice(0, limit).some(entry => Boolean(visit(entry))),
+            }),
+          }),
+        })};
+      }
+      return {get: async () => ({exists: () => path === 'deviceUsers/legacy-device/deviceId'})};
+    },
+  } as unknown as Database;
+  const page = await readDeviceRegistryPage(db, 25);
+  assert.deepEqual(page.entries.map(entry => entry.id), ['CRAY-1', 'CRAY-2']);
+  assert.equal((await readDeviceRegistryPage(db, 1)).cursor, 'CRAY-1');
+
+  const accounts = ['person', 'device-two', 'legacy-device']
+    .map(uid => publicUser({uid, metadata:{}}, null));
+  assert.deepEqual((await filterHumanAccounts(db, accounts)).map(user => user.uid), ['person']);
+});
 
 test('Overview chart separates active farm roles from inactive accounts', () => {
   const account = (role: string|null, disabled = false, employmentStatus = 'active') =>

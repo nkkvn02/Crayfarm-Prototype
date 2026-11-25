@@ -8,6 +8,7 @@ import {readDeviceInfo, saveDeviceInfo} from './deviceInfo';
 import {listAssignmentPonds, updateDeviceAssignment} from './deviceAssignment';
 import {countOverviewInventory} from './overviewInventory';
 import {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
+import {filterHumanAccounts, readDeviceRegistryPage} from './deviceRegistry';
 const usingEmulators=process.env.FUNCTIONS_EMULATOR==='true';
 const app = initializeApp({databaseURL:usingEmulators?'https://demo-crayfarm-default-rtdb.firebaseio.com':'https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app'});
 const auth = getAuth(), db = getDatabase();
@@ -37,10 +38,6 @@ async function profile(user: any) {
   const p = Object.fromEntries(fields.map((f,i) => [f,values[i].val()]));
   return publicUser(user, values.some(v => v.exists()) ? p : null);
 }
-async function serviceIdentity(user:any,projected:any){
-  if(projected.websiteAdmin&&!projected.profileExists)return true;
-  return (await db.ref(`deviceUsers/${key(user.uid)}/deviceId`).get()).exists();
-}
 export const directory = endpoint(async data => {
   const cursor = data.cursor ?? undefined;
   if (cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 2048)) throw new Error('invalid-argument');
@@ -53,8 +50,8 @@ export const directory = endpoint(async data => {
     try {
       const user = data.searchBy === 'email' ? await auth.getUserByEmail(search) : await auth.getUser(key(search));
       const projected = await profile(user);
-      if ((!inactive || matchesDirectoryFilters(projected, data.role, data.status)) && !await serviceIdentity(user,projected)) {
-        users.push(projected);
+      if (!inactive || matchesDirectoryFilters(projected, data.role, data.status)) {
+        users.push(...await filterHumanAccounts(db, [projected]));
       }
     } catch (error: any) { if (error.code !== 'auth/user-not-found') throw error; }
     if (includeArchived) users.push(...await archivedResignations(db, auth, search, data.searchBy));
@@ -64,10 +61,10 @@ export const directory = endpoint(async data => {
   if (data.status && !['enabled','disabled','inactive'].includes(data.status)) throw new Error('invalid-argument');
   const page = await auth.listUsers(25, cursor);
   const projected = await Promise.all(page.users.map(profile));
-  const users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(Boolean) as any[];
+  const users = await filterHumanAccounts(db, projected);
   const matching = users.filter(user => matchesDirectoryFilters(user, data.role, data.status));
-  if (includeArchived && !cursor) matching.push(...await archivedResignations(db, auth));
-  return {users:matching, cursor:page.pageToken ?? null};
+  const archived = includeArchived && !cursor ? await archivedResignations(db, auth) : [];
+  return {users:[...matching, ...archived], cursor:page.pageToken ?? null};
 });
 export const formerWorkers = endpoint(async data => {
   const search=typeof data.search==='string'?data.search.trim().toLowerCase():'';
@@ -87,7 +84,7 @@ export const overview = endpoint(async data => {
   if(cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 2048)) throw new Error('invalid-argument');
   const page = await auth.listUsers(100, cursor);
   const projected=await Promise.all(page.users.map(profile));
-  const users=(await Promise.all(page.users.map(async(user,index)=>await serviceIdentity(user,projected[index])?null:projected[index]))).filter(user => user !== null);
+  const users = await filterHumanAccounts(db, projected);
   const archived = cursor ? [] : await archivedResignations(db, auth);
   return {...summarizeOverviewAccounts(users, archived.length), cursor:page.pageToken ?? null};
 });
@@ -167,11 +164,9 @@ export const deviceDirectory = endpoint(async data => {
     const device=snap.exists()?await deviceView(deviceId,snap.val()):null;
     return {devices:device&&(!data.status||device.status===data.status)?[device]:[],cursor:null};
   }
-  let query=db.ref('devices').orderByKey();if(data.cursor)query=query.startAfter(key(data.cursor));
-  const snap=await query.limitToFirst(26).get(),entries:Array<{id:string;value:any}>=[];
-  snap.forEach(child=>{entries.push({id:child.key!,value:child.val()});});
-  const page=entries.slice(0,25),devices=await Promise.all(page.map(entry=>deviceView(entry.id,entry.value)));
-  return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor:entries.length>25?page.at(-1)!.id:null};
+  const {entries, cursor} = await readDeviceRegistryPage(db, 25, data.cursor);
+  const devices = await Promise.all(entries.map(entry => deviceView(entry.id, entry.value)));
+  return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor};
 });
 export const deviceInfo = endpoint(data => readDeviceInfo(db, data.deviceId));
 export const assignmentPonds = endpoint(data => listAssignmentPonds(db, data.farmId, data.cursor));
