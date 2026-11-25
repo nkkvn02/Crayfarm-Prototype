@@ -15,6 +15,7 @@ const {listAssignmentPonds, updateDeviceAssignment} = functionsRequire('./lib/de
 const {countOverviewInventory} = functionsRequire('./lib/overviewInventory.js');
 const {filterHumanAccounts, readDeviceRegistryPage} = functionsRequire('./lib/deviceRegistry.js');
 const {createDevice} = functionsRequire('./lib/deviceProvisioning.js');
+const {deviceSetupKey, readDeviceSetup} = functionsRequire('./lib/deviceSetup.js');
 const {changeDeviceRecord, deleteRegisteredDevice, resumeMatchingDeviceOperation} = functionsRequire('./lib/deviceLifecycle.js');
 const {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} = functionsRequire('./lib/inactiveAccounts.js');
 const deploymentMode = process.env.CRAYFARM_DEPLOYMENT_MODE?.trim().toLowerCase();
@@ -32,6 +33,7 @@ if (hostedMode && (publicOrigin.protocol !== 'https:' || publicOrigin.pathname !
 const app = await initializeServerAdmin(hostedMode ? `${deploymentMode}-production-server` : 'local-production-server');
 const auth = getAuth(app);
 const db = getDatabase(app);
+const backupKey = deviceSetupKey();
 const control = db.ref('_crayfarmAdmin');
 const dist = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const port = Number(process.env.PORT ?? 5173);
@@ -239,9 +241,13 @@ const handlers = {
     const devices = await Promise.all(entries.map(entry => deviceView(entry.id, entry.value)));
     return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor};
   },
-  provisionDevice: (data, actor) => createDevice(db, auth, data, actor),
+  provisionDevice: (data, actor) => createDevice(db, auth, data, actor, backupKey),
+  deviceSetup: async data => {
+    try { return await readDeviceSetup(db, data.deviceId, backupKey); }
+    catch (error) { throw deviceFailure(error); }
+  },
   deviceInfo: async data => {
-    try { return await readDeviceInfo(db, data.deviceId); }
+    try { return await readDeviceInfo(db, data.deviceId, backupKey); }
     catch (error) { throw deviceFailure(error); }
   },
   assignmentPonds: async data => {

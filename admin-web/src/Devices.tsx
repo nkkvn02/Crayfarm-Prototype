@@ -1,23 +1,25 @@
 import {useEffect, useRef, useState, type FormEvent} from 'react';
-import {AlertTriangle, Cpu, Plus, QrCode, RefreshCw, Search, ToggleLeft, ToggleRight, Trash2, X} from 'lucide-react';
+import {AlertTriangle, Cpu, Download, Plus, QrCode, RefreshCw, Search, ToggleLeft, ToggleRight, Trash2, X} from 'lucide-react';
 import {QRCodeSVG} from 'qrcode.react';
 import DeviceAssignment from './DeviceAssignment';
 import DeviceCreation from './DeviceCreation';
 import DeviceActionConfirmation, {type ConfirmedDeviceAction} from './DeviceActionConfirmation';
+import {downloadDeviceSetup} from './deviceSetupFile';
 
 type Device = {
   deviceId:string;active:boolean|null;status:string|null;farmId:string|null;pondId:string|null;
   linkedAt:number|null;registeredAt:number|null;authConfigured:boolean;farmName:string|null;pondName:string|null;
 };
 type Props = {active:boolean;revision:number;actorUid:string;apiKey:string;api:(name:string,data?:unknown)=>Promise<any>;onOperation:(message:string, registryChanged?:boolean)=>Promise<void>};
-type DeviceInfo = {displayName:string;maintenanceNotes:string};
+type DeviceInfo = {displayName:string;maintenanceNotes:string;setupAvailable:boolean};
 type DeviceFilters = {search:string;status:string};
 const defaultDeviceFilters: DeviceFilters = {search:'',status:''};
 
-function DeviceDetails({device, api, onClose}: {device:Device;api:Props['api'];onClose:()=>void}) {
+function DeviceDetails({device, apiKey, api, onClose}: {device:Device;apiKey:string;api:Props['api'];onClose:()=>void}) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [info, setInfo] = useState<DeviceInfo | null>(null);
   const [saving, setSaving] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const deviceId = device.deviceId;
@@ -42,12 +44,27 @@ function DeviceDetails({device, api, onClose}: {device:Device;api:Props['api'];o
     setError('');
     setNotice('');
     try {
-      setInfo(await api('updateDeviceInfo', {deviceId, ...info}));
+      const {displayName, maintenanceNotes} = await api('updateDeviceInfo', {
+        deviceId, displayName:info.displayName, maintenanceNotes:info.maintenanceNotes,
+      });
+      setInfo({...info, displayName, maintenanceNotes});
       setNotice('Device info saved.');
     } catch {
       setError('Device information could not be saved. Please try again.');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function downloadSetup() {
+    setDownloading(true);
+    setError('');
+    try {
+      downloadDeviceSetup(await api('deviceSetup', {deviceId}), apiKey);
+    } catch {
+      setError('Setup file could not be downloaded. Please try again.');
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -67,6 +84,13 @@ function DeviceDetails({device, api, onClose}: {device:Device;api:Props['api'];o
                 level="M" title={`CrayFarm QR code for ${deviceId}`}/>
             : <p>This device ID is incompatible with the CrayFarm scanner.</p>}
           {canScan && <small>Scan in CrayFarm when adding a pond.</small>}
+          {info?.setupAvailable && (
+            <button type="button" className="secondary compact" disabled={downloading}
+              onClick={() => void downloadSetup()}>
+              <Download size={15} aria-hidden="true"/>{downloading ? 'Preparing file…' : 'Download setup file'}
+            </button>
+          )}
+          {info && !info.setupAvailable && device.authConfigured && <small>No setup file is saved for this device.</small>}
         </div>
         <div>
           <dl className="device-info-data">
@@ -176,7 +200,7 @@ export default function DeviceRegistry({active,revision,actorUid,apiKey,api,onOp
         await onOperation(`Assignment updated for ${assignmentDevice.deviceId}.`);
       })}/>}
     {selectedDevice && <DeviceDetails key={selectedDevice.deviceId} device={selectedDevice}
-      api={api} onClose={() => setSelectedDevice(null)}/>}
+      apiKey={apiKey} api={api} onClose={() => setSelectedDevice(null)}/>}
     {error&&<p role="alert" className="error"><AlertTriangle size={18}/>{error}</p>}
     {pending&&<div className="banner device-recovery"><span><AlertTriangle size={18}/>An earlier device request may need reconciliation.</span><button className="secondary compact" disabled={busy} onClick={()=>void run(()=>perform(JSON.parse(pending)))}><RefreshCw size={15}/>Recover</button></div>}
     <div className="device-toolbar"><form onSubmit={event=>{event.preventDefault();void run(()=>load({search,status}));}}><div className="search-field"><Search size={17}/><input ref={searchInput} aria-label="Search Device ID" placeholder="Search device ID" value={search} onChange={event=>setSearch(event.target.value)}/></div><select aria-label="Device status" value={status} onChange={event=>setStatus(event.target.value)}><option value="">All states</option><option value="available">Available</option><option value="assigned">Assigned</option><option value="inactive">Inactive</option></select><button className="secondary" disabled={busy}><Search size={16}/>Search</button></form><button type="button" disabled={busy} onClick={()=>setShowCreation(true)} aria-haspopup="dialog"><Plus size={17}/>Create device</button></div>

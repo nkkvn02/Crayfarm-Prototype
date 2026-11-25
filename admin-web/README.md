@@ -43,6 +43,8 @@ firebase login --reauth
 
 The authorized account must exist in Firebase Authentication and have the exact boolean custom claim `crayfarmAdmin: true`. The launcher builds with `VITE_LOCAL_PRODUCTION=true`, binds only to loopback, and stops when its terminal process is stopped.
 
+For setup file re-downloads, the local server uses the same encryption key as the deployment that created the device. Set `CRAYFARM_DEVICE_SETUP_KEY` to that deployment's 64-character hex key when it uses a dedicated key. A server started with Firebase CLI credentials alone can provide the original setup download during creation.
+
 The Firebase client configuration in `.env.example` is public application configuration from the existing Android project. No service-account credential belongs in this directory.
 
 ## Admin provisioning

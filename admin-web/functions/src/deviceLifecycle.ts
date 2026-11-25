@@ -77,6 +77,7 @@ export function applyDeviceDeletion(root: Records, {deviceId, operationId}: Dele
   }
   delete root.devices[deviceId];
   if (control.deviceInfo) delete control.deviceInfo[deviceId];
+  if (control.deviceSetups) delete control.deviceSetups[deviceId];
   root._crayfarmAdmin = control;
   const record = {deviceId, operationId, actorUid:actor, action:'delete', status:'succeeded', createdAt:now, updatedAt:now};
   (control.deviceOperations ??= {})[operationId] = record;

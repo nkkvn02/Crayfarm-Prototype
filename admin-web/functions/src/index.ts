@@ -10,10 +10,12 @@ import {countOverviewInventory} from './overviewInventory';
 import {archivedResignations, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
 import {filterHumanAccounts, readDeviceRegistryPage} from './deviceRegistry';
 import {createDevice, DeviceProvisioningError} from './deviceProvisioning';
+import {deviceSetupKey, readDeviceSetup} from './deviceSetup';
 import {changeDeviceRecord, deleteRegisteredDevice, resumeMatchingDeviceOperation, type DeviceOperationResult} from './deviceLifecycle';
 const usingEmulators=process.env.FUNCTIONS_EMULATOR==='true';
 const app = initializeApp({databaseURL:usingEmulators?'https://demo-crayfarm-default-rtdb.firebaseio.com':'https://crayfarm-eb2ea-default-rtdb.asia-southeast1.firebasedatabase.app'});
 const auth = getAuth(), db = getDatabase();
+const backupKey = deviceSetupKey();
 const control = db.ref('_crayfarmAdmin');
 function endpoint(fn: (data: any, actor: string) => Promise<any>) {
   return onCall({region:'asia-southeast1', memory:'256MiB', cpu:'gcf_gen1', minInstances:0, maxInstances:3, timeoutSeconds:60}, async request => {
@@ -170,9 +172,10 @@ export const deviceDirectory = endpoint(async data => {
   const devices = await Promise.all(entries.map(entry => deviceView(entry.id, entry.value)));
   return {devices:devices.filter(device=>!data.status||device.status===data.status),cursor};
 });
-export const deviceInfo = endpoint(data => readDeviceInfo(db, data.deviceId));
+export const deviceInfo = endpoint(data => readDeviceInfo(db, data.deviceId, backupKey));
+export const deviceSetup = endpoint(data => readDeviceSetup(db, data.deviceId, backupKey));
 export const provisionDevice = endpoint(async (data, actor) => {
-  try { return await createDevice(db, auth, data, actor); }
+  try { return await createDevice(db, auth, data, actor, backupKey); }
   catch (error) {
     if (!(error instanceof DeviceProvisioningError)) throw error;
     const code = error.status === 400 ? 'invalid-argument' : error.status === 409 ? 'failed-precondition' : 'unavailable';

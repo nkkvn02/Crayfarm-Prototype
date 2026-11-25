@@ -1,8 +1,9 @@
 import {useEffect, useRef, useState} from 'react';
 import {Download, Plus, X} from 'lucide-react';
 import {QRCodeSVG} from 'qrcode.react';
+import {downloadDeviceSetup, type DeviceSetup} from './deviceSetupFile';
 
-type Setup = {deviceId:string; email:string; password:string};
+type Setup = DeviceSetup & {setupAvailable:boolean};
 type Request = {operationId:string; proof:string};
 type Props = {
   open:boolean;
@@ -64,24 +65,6 @@ export default function DeviceCreation({open, actorUid, apiKey, api, onClose, on
     onClose();
   }
 
-  function download() {
-    if (!setup) return;
-    const header = [
-      '#pragma once',
-      `#define CRAYFARM_DEVICE_ID ${JSON.stringify(setup.deviceId)}`,
-      `#define CRAYFARM_FIREBASE_API_KEY ${JSON.stringify(apiKey)}`,
-      `#define CRAYFARM_FIREBASE_USER_EMAIL ${JSON.stringify(setup.email)}`,
-      `#define CRAYFARM_FIREBASE_USER_PASSWORD ${JSON.stringify(setup.password)}`,
-      '',
-    ].join('\n');
-    const url = URL.createObjectURL(new Blob([header], {type:'text/plain;charset=utf-8'}));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'firebase_credentials.h';
-    link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
   return (
     <dialog className="panel device-details" ref={dialog} aria-labelledby="device-creation-title"
       onClose={close} onCancel={event => { if (creating) event.preventDefault(); }}>
@@ -102,8 +85,8 @@ export default function DeviceCreation({open, actorUid, apiKey, api, onClose, on
             <small>Scan in CrayFarm to pair with a pond.</small>
           </div>
           <div className="device-creation-download">
-            <p>Download the private setup file before closing. Place it in the ESP32 sketch folder and flash the board.</p>
-            <button type="button" onClick={download}><Download size={17} aria-hidden="true"/>Download setup file</button>
+            <p>{setup.setupAvailable ? 'You can download the private setup file again from Device info.' : 'Download the private setup file before closing.'} Place it in the ESP32 sketch folder and flash the board.</p>
+            <button type="button" onClick={() => downloadDeviceSetup(setup, apiKey)}><Download size={17} aria-hidden="true"/>Download setup file</button>
           </div>
         </div>
       ) : (

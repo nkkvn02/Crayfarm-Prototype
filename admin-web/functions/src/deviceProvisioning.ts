@@ -2,6 +2,7 @@ import {createHash, createHmac, randomBytes, randomUUID} from 'node:crypto';
 import type {Auth} from 'firebase-admin/auth';
 import type {Database} from 'firebase-admin/database';
 import {nextDeviceRecord} from './core';
+import {hasDeviceSetup, sealDeviceSetup} from './deviceSetup';
 
 type Provisioning = {
   actor: string;
@@ -19,7 +20,7 @@ export class DeviceProvisioningError extends Error {
   }
 }
 
-export async function createDevice(db: Database, auth: Auth, input: {operationId?: unknown; proof?: unknown}, actor: string) {
+export async function createDevice(db: Database, auth: Auth, input: {operationId?: unknown; proof?: unknown}, actor: string, backupKey?:Buffer) {
   const {operationId, proof} = input;
   if (typeof operationId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(operationId)
     || typeof proof !== 'string' || !/^[a-f0-9]{64}$/.test(proof)) {
@@ -47,13 +48,19 @@ export async function createDevice(db: Database, auth: Auth, input: {operationId
     }
     const password = createHmac('sha256', proof).update(`crayfarm-esp32:${record.deviceId}`).digest('hex');
     const setup = {deviceId:record.deviceId, email:record.email, password};
-    if (record.completedAt) return setup;
+    const identity = {authUid:record.authUid, provisioningOperationId:operationId};
+    const backupPath = `deviceSetups/${record.deviceId}`;
+    const completedSetup = async () => ({
+      ...setup,
+      setupAvailable: Boolean(backupKey && hasDeviceSetup(identity, (await control.child(backupPath).get()).val(), backupKey)),
+    });
+    if (record.completedAt) return await completedSetup();
 
     const lock = await lease.transaction(current => current && current.expiresAt > Date.now()
       ? undefined : {token, expiresAt:Date.now() + 120000});
     if (!lock.committed) throw new DeviceProvisioningError('Device creation is still running. Retry in a moment.', 409);
     leased = true;
-    if ((await operation.child('completedAt').get()).exists()) return setup;
+    if ((await operation.child('completedAt').get()).exists()) return await completedSetup();
 
     const {deviceId, authUid, email, createdAt} = record;
     const device = db.ref(`devices/${deviceId}`);
@@ -68,14 +75,14 @@ export async function createDevice(db: Database, auth: Auth, input: {operationId
       throw new DeviceProvisioningError('The generated device ID is already in use.', 409);
     }
 
-    let identity;
+    let user;
     try {
-      identity = await auth.getUser(authUid);
+      user = await auth.getUser(authUid);
     } catch (error) {
       if ((error as {code?: string}).code !== 'auth/user-not-found') throw error;
-      identity = await auth.createUser({uid:authUid, email, password, disabled:true});
+      user = await auth.createUser({uid:authUid, email, password, disabled:true});
     }
-    if (identity.email !== email || identity.customClaims?.crayfarmAdmin) {
+    if (user.email !== email || user.customClaims?.crayfarmAdmin) {
       throw new DeviceProvisioningError('The generated sign-in belongs to a different account.', 409);
     }
 
@@ -84,7 +91,7 @@ export async function createDevice(db: Database, auth: Auth, input: {operationId
     if (!mapping.committed) {
       throw new DeviceProvisioningError('The generated sign-in is linked to a different device.', 409);
     }
-    if (identity.disabled) await auth.updateUser(authUid, {disabled:false});
+    if (user.disabled) await auth.updateUser(authUid, {disabled:false});
     const activated = await device.transaction(current =>
       current?.provisioningOperationId === operationId && current.authUid === authUid && current.status === 'provisioning'
         ? {...current, active:true, status:'available'}
@@ -100,8 +107,9 @@ export async function createDevice(db: Database, auth: Auth, input: {operationId
       [`deviceProvisioning/${operationId}/completedAt`]:completedAt,
       [`deviceOperations/${operationId}`]:audit,
       [`deviceAudit/${operationId}`]:{...audit, outcome:'succeeded', timestamp:completedAt},
+      ...(backupKey && {[backupPath]:sealDeviceSetup(setup, identity, backupKey)}),
     });
-    return setup;
+    return {...setup, setupAvailable:!!backupKey};
   } catch (error) {
     if (error instanceof DeviceProvisioningError) throw error;
     throw new DeviceProvisioningError('Device creation could not finish. Retry from this window.', 503);

@@ -8,6 +8,8 @@ import {applyAssignment} from './deviceAssignment';
 import {isInactiveAccount, matchesDirectoryFilters, summarizeOverviewAccounts} from './inactiveAccounts';
 import {filterHumanAccounts, readDeviceRegistryPage} from './deviceRegistry';
 import {createDevice} from './deviceProvisioning';
+import {readDeviceSetup} from './deviceSetup';
+import {readDeviceInfo} from './deviceInfo';
 import {applyDeviceDeletion, changeDeviceRecord, resumeMatchingDeviceOperation} from './deviceLifecycle';
 
 test('deactivation waits for the real device when Firebase starts with an empty cache', async () => {
@@ -29,7 +31,8 @@ test('only inactive unlinked devices can be deleted, and replay preserves the ou
   const pond = {deviceId:'CRAY-1', history:{sample:{temperature:24}}};
   const root = {
     devices:{'CRAY-1':device, 'CRAY-2':{}}, farms:{farm:{ponds:{pond}}},
-    deviceUsers:{'device-login':{deviceId:'CRAY-1'}}, _crayfarmAdmin:{deviceInfo:{'CRAY-1':{displayName:'device'}}},
+    deviceUsers:{'device-login':{deviceId:'CRAY-1'}}, _crayfarmAdmin:{deviceInfo:{'CRAY-1':{displayName:'device'}},
+      deviceSetups:{'CRAY-1':{ciphertext:'encrypted'}}},
   };
   const request = {deviceId:'CRAY-1', operationId:'delete-op'};
   assert.match(applyDeviceDeletion(root, request, 'admin', 20) ?? '', /deactivate/);
@@ -41,6 +44,7 @@ test('only inactive unlinked devices can be deleted, and replay preserves the ou
   assert.deepEqual(Object.keys(root.devices), ['CRAY-2']);
   assert.deepEqual(root.deviceUsers, {});
   assert.deepEqual(root._crayfarmAdmin.deviceInfo, {});
+  assert.deepEqual(root._crayfarmAdmin.deviceSetups, {});
   assert.deepEqual(pond.history, {sample:{temperature:24}});
   const control = (root as Record<string, any>)._crayfarmAdmin;
   assert.equal(control.retiredDeviceUsers['device-login'].deviceId, 'CRAY-1');
@@ -74,7 +78,7 @@ test('device creation resumes after interruption with the same ID, sign-in and c
   let failMapping = true;
   const ref = (path: string) => ({
     child: (child: string) => ref(`${path}/${child}`),
-    get: async () => ({exists: () => data.has(path)}),
+    get: async () => ({exists: () => data.has(path), val: () => data.get(path) ?? null}),
     transaction: async (change: (value: any) => any) => {
       if (path.startsWith('deviceUsers/') && failMapping) {
         failMapping = false;
@@ -117,21 +121,31 @@ test('device creation resumes after interruption with the same ID, sign-in and c
     },
   } as unknown as Auth;
   const request = {operationId:'12345678-0000-4000-8000-000000000000', proof:'a'.repeat(64)};
+  const backupKey = Buffer.alloc(32, 4);
 
-  await assert.rejects(createDevice(db, auth, request, 'admin'), /Retry from this window/);
+  await assert.rejects(createDevice(db, auth, request, 'admin', backupKey), /Retry from this window/);
   assert.equal(identities.size, 1);
   const [uid, pendingIdentity] = identities.entries().next().value!;
   assert.equal(pendingIdentity.disabled, true);
-  const result = await createDevice(db, auth, request, 'admin');
+  const result = await createDevice(db, auth, request, 'admin', backupKey);
   assert.match(result.deviceId, /^CRAY-(?:[A-F0-9]{4}-){3}[A-F0-9]{4}$/);
   assert.equal(data.get(`devices/${result.deviceId}`).status, 'available');
   assert.equal(data.get(`deviceUsers/${uid}/deviceId`), result.deviceId);
   assert.equal(identities.get(uid)?.disabled, false);
-  assert.deepEqual(await createDevice(db, auth, request, 'admin'), result);
+  assert.deepEqual(await createDevice(db, auth, request, 'admin', backupKey), result);
   assert.equal(identities.size, 1);
   assert.equal([...data.keys()].filter(key => key.startsWith('devices/')).length, 1);
   assert(!JSON.stringify([...data.values()]).includes(result.password));
   assert(!JSON.stringify([...data.values()]).includes(request.proof));
+  assert.equal(result.setupAvailable, true);
+  const {setupAvailable, ...setup} = result;
+  assert.equal((await readDeviceInfo(db, result.deviceId, backupKey)).setupAvailable, true);
+  assert.deepEqual(await readDeviceSetup(db, result.deviceId, backupKey), setup);
+  assert.deepEqual(await readDeviceSetup(db, result.deviceId, backupKey), setup);
+  await assert.rejects(readDeviceSetup(db, result.deviceId, Buffer.alloc(32, 5)), /not-found/);
+  const backup = data.get(`_crayfarmAdmin/deviceSetups/${result.deviceId}`);
+  data.set(`_crayfarmAdmin/deviceSetups/${result.deviceId}`, {...backup, tag:Buffer.alloc(16).toString('base64')});
+  await assert.rejects(readDeviceSetup(db, result.deviceId, backupKey), /failed-precondition/);
   await assert.rejects(createDevice(db, auth, request, 'different-admin'), /different setup/);
 });
 
