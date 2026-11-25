@@ -3,6 +3,7 @@ import {AlertTriangle, Cpu, Plus, QrCode, RefreshCw, Search, ToggleLeft, ToggleR
 import {QRCodeSVG} from 'qrcode.react';
 import DeviceAssignment from './DeviceAssignment';
 import DeviceCreation from './DeviceCreation';
+import DeviceActionConfirmation, {type ConfirmedDeviceAction} from './DeviceActionConfirmation';
 
 type Device = {
   deviceId:string;active:boolean|null;status:string|null;farmId:string|null;pondId:string|null;
@@ -105,6 +106,12 @@ export default function DeviceRegistry({active,revision,actorUid,apiKey,api,onOp
   const [showCreation,setShowCreation]=useState(false);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [assignmentDevice, setAssignmentDevice] = useState<Device | null>(null);
+  const [confirmation, setConfirmation] = useState<{
+    action: ConfirmedDeviceAction;
+    deviceId: string;
+    trigger: HTMLButtonElement;
+  } | null>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const pending=sessionStorage.getItem('crayfarm-device-pending');
   async function run(task:()=>Promise<void>){setBusy(true);setError('');try{await task();}catch(reason:any){setError(reason.message||'Request failed.');}finally{setBusy(false);}}
   async function load(filters:DeviceFilters, cursor:string|null = null) {
@@ -140,13 +147,18 @@ export default function DeviceRegistry({active,revision,actorUid,apiKey,api,onOp
       refresh(),
     ]);
   }
-  async function changeDevice(device:Device, action:'activate'|'deactivate'|'delete') {
-    const label = {activate:'Activate', deactivate:'Deactivate', delete:'Delete'}[action];
-    const message = `${label} ${device.deviceId}?` + (action === 'delete' ? ' This permanently removes its registration and device access.' : '');
-    if (!window.confirm(message)) return;
-    await perform({deviceId:device.deviceId,action,operationId:`${Date.now()}_${crypto.randomUUID()}`});
+  function changeDevice(deviceId:string, action:'activate'|ConfirmedDeviceAction) {
+    return perform({deviceId,action,operationId:`${Date.now()}_${crypto.randomUUID()}`});
   }
   return <>
+    {confirmation && <DeviceActionConfirmation action={confirmation.action} deviceId={confirmation.deviceId}
+      onConfirm={() => run(() => changeDevice(confirmation.deviceId, confirmation.action))}
+      onClose={() => {
+        const {trigger} = confirmation;
+        setConfirmation(null);
+        if (trigger.isConnected && !trigger.disabled) trigger.focus();
+        else searchInput.current?.focus();
+      }}/>}
     <DeviceCreation open={showCreation} actorUid={actorUid} apiKey={apiKey} api={api} onClose={() => setShowCreation(false)}
       onCreated={deviceId => void run(async () => {
         await Promise.all([refresh(), onOperation(`Device ${deviceId} created.`, true)]);
@@ -167,7 +179,7 @@ export default function DeviceRegistry({active,revision,actorUid,apiKey,api,onOp
       api={api} onClose={() => setSelectedDevice(null)}/>}
     {error&&<p role="alert" className="error"><AlertTriangle size={18}/>{error}</p>}
     {pending&&<div className="banner device-recovery"><span><AlertTriangle size={18}/>An earlier device request may need reconciliation.</span><button className="secondary compact" disabled={busy} onClick={()=>void run(()=>perform(JSON.parse(pending)))}><RefreshCw size={15}/>Recover</button></div>}
-    <div className="device-toolbar"><form onSubmit={event=>{event.preventDefault();void run(()=>load({search,status}));}}><div className="search-field"><Search size={17}/><input aria-label="Search Device ID" placeholder="Search device ID" value={search} onChange={event=>setSearch(event.target.value)}/></div><select aria-label="Device status" value={status} onChange={event=>setStatus(event.target.value)}><option value="">All states</option><option value="available">Available</option><option value="assigned">Assigned</option><option value="inactive">Inactive</option></select><button className="secondary" disabled={busy}><Search size={16}/>Search</button></form><button type="button" disabled={busy} onClick={()=>setShowCreation(true)} aria-haspopup="dialog"><Plus size={17}/>Create device</button></div>
+    <div className="device-toolbar"><form onSubmit={event=>{event.preventDefault();void run(()=>load({search,status}));}}><div className="search-field"><Search size={17}/><input ref={searchInput} aria-label="Search Device ID" placeholder="Search device ID" value={search} onChange={event=>setSearch(event.target.value)}/></div><select aria-label="Device status" value={status} onChange={event=>setStatus(event.target.value)}><option value="">All states</option><option value="available">Available</option><option value="assigned">Assigned</option><option value="inactive">Inactive</option></select><button className="secondary" disabled={busy}><Search size={16}/>Search</button></form><button type="button" disabled={busy} onClick={()=>setShowCreation(true)} aria-haspopup="dialog"><Plus size={17}/>Create device</button></div>
     <div className="device-grid">
       {devices.map(device => (
         <article className="device-card" key={device.deviceId}>
@@ -190,14 +202,21 @@ export default function DeviceRegistry({active,revision,actorUid,apiKey,api,onOp
               </button>}
             {device.status !== 'assigned' && device.status !== 'provisioning' && (
               <button className="secondary compact" disabled={busy || !!pending}
-                onClick={() => void run(() => changeDevice(device, device.active === false ? 'activate' : 'deactivate'))}>
+                aria-haspopup={device.active === false ? undefined : 'dialog'}
+                onClick={event => {
+                  if (device.active === false) {
+                    if (window.confirm(`Activate ${device.deviceId}?`)) void run(() => changeDevice(device.deviceId, 'activate'));
+                  } else {
+                    setConfirmation({action:'deactivate', deviceId:device.deviceId, trigger:event.currentTarget});
+                  }
+                }}>
                 {device.active === false ? <ToggleRight size={16}/> : <ToggleLeft size={16}/>}
                 {device.active === false ? 'Activate' : 'Deactivate'}
               </button>
             )}
             {device.status === 'inactive' && device.active === false && !device.farmId && !device.pondId && (
-              <button className="secondary compact device-delete" disabled={busy || !!pending}
-                onClick={() => void run(() => changeDevice(device, 'delete'))}>
+              <button className="secondary compact device-delete" disabled={busy || !!pending} aria-haspopup="dialog"
+                onClick={event => setConfirmation({action:'delete', deviceId:device.deviceId, trigger:event.currentTarget})}>
                 <Trash2 size={16} aria-hidden="true"/>Delete device
               </button>
             )}
